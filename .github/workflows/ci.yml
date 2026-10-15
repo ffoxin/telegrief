@@ -9,6 +9,9 @@ on:
 env:
   IMAGE: ghcr.io/${{ github.repository }}
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -107,9 +110,10 @@ jobs:
             $(printf "$IMAGE@sha256:%s " *)
       - run: docker buildx imagetools inspect "$IMAGE:${{ steps.meta.outputs.version }}"
 
-  # Pushes to main: the server pulls the repo (compose file, deploy.sh) and the
-  # new image. The deploy key on the server is `restrict`ed to a forced command
-  # (`git pull && ./deploy.sh`), so this job cannot run anything else there.
+  # Pushes to main: the server pulls the new image and restarts. The server has
+  # no git checkout; it owns its compose file and deploy.sh, and the deploy key
+  # is `restrict`ed to a forced command running that script. A push to main can
+  # therefore change only the image, not how it runs on the host.
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: manifest

@@ -2,6 +2,15 @@ services:
   app:
     image: ghcr.io/ffoxin/telegrief:latest
     restart: unless-stopped
+    # Owner of ./.data, ./config and ./secrets on the host; set PUID/PGID in .env.
+    user: "${PUID:-1000}:${PGID:-1000}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     environment:
       - TZ=UTC
       - RUN_AT=02:00

@@ -72,16 +72,32 @@ cp docker-compose.override.yml.example docker-compose.override.yml  # local imag
 
 ## Deploy
 
-Every push to `main` builds the image and then SSHes to the server, which pulls
-the repo and the image and restarts the service (`deploy.sh`). One-time setup:
+Every push to `main` builds the image and then SSHes to the server, which
+pulls the image and restarts the service (`deploy.sh`). The server has **no
+git checkout**: it owns `docker-compose.yml`, `deploy.sh`, `.env`, `config/`,
+`secrets/` and `.data/`, so a push to `main` can change only what runs inside
+the container, never how it runs on the host. When the repo's reference copies
+of `docker-compose.yml` or `deploy.sh` change, update the server by hand.
 
-1. On the server: clone the repo, add `secrets/`, `config/folders.yaml`, run `login`
-   (see Quick start). The clone must be fast-forwardable (`git pull --ff-only`).
-2. Generate a key and restrict it to the deploy command on the server:
+The container runs as `PUID:PGID` with a read-only root filesystem, all
+capabilities dropped and `no-new-privileges`; only `./.data` is writable.
+
+One-time setup:
+
+1. On the server, in an empty service directory: copy `docker-compose.yml` and
+   `deploy.sh` from the repo, create `config/folders.yaml` and `secrets/`, run
+   `login` (see Quick start), and point the container at the owner of those
+   files:
+
+   ```bash
+   printf 'PUID=%s\nPGID=%s\n' "$(id -u)" "$(id -g)" > .env
+   ```
+
+2. Generate a key and restrict it to the deploy script on the server:
 
    ```bash
    ssh-keygen -t ed25519 -N "" -C telegrief-deploy -f deploy_key
-   echo 'command="cd /path/to/telegrief && git pull --ff-only --quiet && exec ./deploy.sh",restrict '"$(cat deploy_key.pub)" \
+   echo 'command="/path/to/telegrief/deploy.sh",restrict '"$(cat deploy_key.pub)" \
      | ssh server 'cat >> ~/.ssh/authorized_keys'
    ```
 
