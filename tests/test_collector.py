@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from telegrief.collector import Collector, digest_targets, group_albums, window
-from telegrief.config import FolderConfig, FoldersConfig
 from telegrief.models import ChannelInfo, RawPost
 from telegrief.storage import Storage
 from telegrief.tg.protocols import FolderNotFound
@@ -162,12 +161,10 @@ async def test_collect_skips_channel_on_unexpected_error(storage: Storage) -> No
     assert result.errors == ["-1002: boom"]
 
 
-async def test_digest_targets_from_storage_and_yaml(storage: Storage) -> None:
+async def test_digest_targets_from_storage(storage: Storage) -> None:
     await storage.set_target("Memes", -1009, NOW)
-    folders = FoldersConfig(
-        folders=[FolderConfig(name="Memes"), FolderConfig(name="News", target=-1008)]
-    )
-    assert await digest_targets(storage, folders) == {-1009, -1008}
+    await storage.set_target("News", -1008, NOW)
+    assert await digest_targets(storage) == {-1009, -1008}
 
 
 async def test_collect_skips_digest_channels_sitting_in_the_folder(storage: Storage) -> None:

@@ -13,7 +13,6 @@ from .models import ChannelInfo, Post, RawPost
 from .tg.protocols import ChannelUnavailable, SessionDead, UserGateway
 
 if TYPE_CHECKING:
-    from .config import FoldersConfig
     from .storage import Storage
 
 CACHE_TTL = timedelta(hours=24)
@@ -57,11 +56,9 @@ class Collected:
     errors: list[str] = field(default_factory=list)
 
 
-async def digest_targets(storage: Storage, folders: FoldersConfig) -> set[int]:
-    """Every channel that receives digests: stored mappings plus yaml `target` overrides."""
-    ids = set(await storage.all_target_ids())
-    ids.update(f.target for f in folders.folders if f.target is not None)
-    return ids
+async def digest_targets(storage: Storage) -> set[int]:
+    """Every channel that receives digests; never read as a source."""
+    return set(await storage.all_target_ids())
 
 
 class Collector:

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from .config import FolderConfig, strip_symbols
+from .config import strip_symbols
 from .tg.protocols import GatewayError, SessionDead, UserGateway
 
 if TYPE_CHECKING:
@@ -28,19 +28,18 @@ class TargetResolver:
         self._storage = storage
         self._bot_username = bot_username
 
-    async def resolve(self, cfg: FolderConfig, now: datetime) -> int:
-        if cfg.target is not None:
-            return cfg.target
-        channel_id = await self._storage.get_target(cfg.name)
+    async def resolve(self, name: str, now: datetime) -> int:
+        """The folder's digest channel, created (and pinned in the folder) on first use."""
+        channel_id = await self._storage.get_target(name)
         if channel_id is None:
             # Channel titles cannot hold custom emoji, so drop emoji altogether.
-            title = strip_symbols(await self._user.folder_title(cfg.name)) or cfg.name
+            title = strip_symbols(await self._user.folder_title(name)) or name
             channel_id = await self._user.create_digest_channel(
                 f"{title} · digest", self._bot_username
             )
-            await self._storage.set_target(cfg.name, channel_id, now)
-            logger.info("folder {}: created digest channel {}", cfg.name, channel_id)
-        await self._pin_in_folder(cfg.name, channel_id)
+            await self._storage.set_target(name, channel_id, now)
+            logger.info("folder {}: created digest channel {}", name, channel_id)
+        await self._pin_in_folder(name, channel_id)
         return channel_id
 
     async def _pin_in_folder(self, folder: str, channel_id: int) -> None:
