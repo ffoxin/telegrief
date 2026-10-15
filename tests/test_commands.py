@@ -157,3 +157,4 @@ async def test_reset(h: Harness) -> None:
 
 async def test_unknown_command_shows_usage(h: Harness) -> None:
     assert await h.bot.command("help", []) == USAGE
+    assert await h.bot.command("start", []) == USAGE

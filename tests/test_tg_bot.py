@@ -3,8 +3,15 @@ from types import SimpleNamespace
 import pytest
 from telethon.tl import types
 
-from telegrief.tg.bot import TelethonBot, next_button, parse_callback, parse_command, relay_media
-from telegrief.tg.protocols import RelayTimeout
+from telegrief.tg.bot import (
+    TelethonBot,
+    dispatch_owner_message,
+    next_button,
+    parse_callback,
+    parse_command,
+    relay_media,
+)
+from telegrief.tg.protocols import PING_TEXT, RelayTimeout
 
 
 def test_parse_callback() -> None:
@@ -20,6 +27,52 @@ def test_parse_command() -> None:
     assert parse_command("/status") == ("status", [])
     assert parse_command("hello") is None
     assert parse_command("") is None
+
+
+class _Event:
+    def __init__(self, text: str) -> None:
+        self.raw_text = text
+        self.deleted = False
+        self.replies: list[str] = []
+
+    async def delete(self) -> None:
+        self.deleted = True
+
+    async def respond(self, text: str) -> None:
+        self.replies.append(text)
+
+
+async def _echo(command: str, args: list[str]) -> str:
+    return f"{command} {args}"
+
+
+async def test_dispatch_deletes_startup_ping_silently() -> None:
+    event = _Event(PING_TEXT)
+    await dispatch_owner_message(event, _echo)
+    assert event.deleted is True
+    assert event.replies == []
+
+
+async def test_dispatch_start_goes_to_handler() -> None:
+    event = _Event("/start")
+    await dispatch_owner_message(event, _echo)
+    assert event.deleted is False
+    assert event.replies == ["start []"]
+
+
+async def test_dispatch_ignores_non_commands() -> None:
+    event = _Event("hello")
+    await dispatch_owner_message(event, _echo)
+    assert event.replies == []
+
+
+async def test_dispatch_reports_handler_error() -> None:
+    async def boom(command: str, args: list[str]) -> str:
+        raise RuntimeError("nope")
+
+    event = _Event("/run x")
+    await dispatch_owner_message(event, boom)
+    assert event.replies == ["❌ nope"]
 
 
 def test_next_button() -> None:

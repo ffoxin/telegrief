@@ -26,6 +26,7 @@ from telethon.tl import functions, types
 from ..config import normalize_title
 from ..models import ChannelInfo, RawPost
 from .protocols import (
+    PING_TEXT,
     ChannelUnavailable,
     CopyFailed,
     FolderNotFound,
@@ -359,7 +360,7 @@ class TelethonUser:
 
     @_translate_fatal
     async def ping_bot(self, bot_username: str) -> None:
-        await self._client.send_message(bot_username, "/start")
+        await self._client.send_message(bot_username, PING_TEXT)
 
 
 async def login(session: Path, api_id: int, api_hash: str) -> None:

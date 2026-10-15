@@ -20,6 +20,7 @@ from telethon.errors import (
 from telethon.tl import types
 
 from .protocols import (
+    PING_TEXT,
     CommandHandlerFn,
     ForwardRestricted,
     NextHandler,
@@ -46,6 +47,23 @@ def parse_command(text: str) -> tuple[str, list[str]] | None:
     if not match:
         return None
     return match.group(1).lower(), (match.group(2) or "").split()
+
+
+async def dispatch_owner_message(event: Any, handler: CommandHandlerFn) -> None:
+    """Route one owner message: startup ping is deleted, commands get a reply."""
+    parsed = parse_command(event.raw_text or "")
+    if parsed is None:
+        return
+    command, args = parsed
+    if command == PING_TEXT.lstrip("/"):
+        await event.delete()
+        return
+    try:
+        reply = await handler(command, args)
+    except Exception as exc:
+        logger.exception("command /{} failed", command)
+        reply = f"❌ {exc}"
+    await event.respond((reply or "ok")[:REPLY_LIMIT])
 
 
 def next_button(digest_id: int | None, label: str) -> Any:
@@ -234,19 +252,7 @@ class TelethonBot:
 
     def on_owner_command(self, handler: CommandHandlerFn) -> None:
         async def _on_message(event: Any) -> None:
-            parsed = parse_command(event.raw_text or "")
-            if parsed is None:
-                return
-            command, args = parsed
-            if command == "start":
-                await event.delete()
-                return
-            try:
-                reply = await handler(command, args)
-            except Exception as exc:
-                logger.exception("command /{} failed", command)
-                reply = f"❌ {exc}"
-            await event.respond((reply or "ok")[:REPLY_LIMIT])
+            await dispatch_owner_message(event, handler)
 
         self._client.add_event_handler(
             _on_message,

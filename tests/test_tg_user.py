@@ -1,12 +1,14 @@
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from telethon.tl import types
 
 from telegrief.config import normalize_title
-from telegrief.tg.protocols import FolderNotFound
+from telegrief.tg.protocols import PING_TEXT, FolderNotFound
 from telegrief.tg.user import (
+    TelethonUser,
     channel_peer_ids,
     compose_caption,
     filter_title,
@@ -147,3 +149,15 @@ def test_compose_caption_appends_full_text_and_truncates() -> None:
     assert compose_caption(head, "") == head
     assert compose_caption(head, "hello") == head + "\n\nhello"
     assert len(compose_caption(head, "x" * 5000)) == 1024
+
+
+async def test_ping_bot_sends_ping_text(tmp_path: Path) -> None:
+    sent: list[tuple[str, str]] = []
+
+    class _Client:
+        async def send_message(self, peer: str, text: str) -> None:
+            sent.append((peer, text))
+
+    user = TelethonUser(_Client(), 1, tmp_path)  # type: ignore[arg-type]
+    await user.ping_bot("telegrief_bot")
+    assert sent == [("telegrief_bot", PING_TEXT)]

@@ -41,6 +41,7 @@ Then open the bot chat and send `/folders` to verify channel detection, and
 - `/status` — latest digest per folder.
 - `/folders` — channels resolved per folder.
 - `/reset <folder>` — forget the digest channel; next run creates a new one.
+- anything else (`/start`, `/help`) — usage.
 
 ## Configuration
 

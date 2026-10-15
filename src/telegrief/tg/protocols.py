@@ -8,6 +8,10 @@ from typing import Protocol, runtime_checkable
 
 from ..models import ChannelInfo, RawPost
 
+# Sent by the user session to the bot at startup so the bot can message the owner;
+# the bot deletes it silently.
+PING_TEXT = "/ping"
+
 
 class GatewayError(Exception):
     """Base class for Telegram-side failures the application handles."""
