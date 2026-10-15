@@ -1,6 +1,7 @@
 services:
   app:
-    image: ghcr.io/ffoxin/telegrief:latest
+    # deploy.sh pins TELEGRIEF_IMAGE to ghcr.io/ffoxin/telegrief@sha256:... in .env
+    image: ${TELEGRIEF_IMAGE:-ghcr.io/ffoxin/telegrief:latest}
     restart: unless-stopped
     # Owner of ./.data, ./config and ./secrets on the host; set PUID/PGID in .env.
     user: "${PUID:-1000}:${PGID:-1000}"

@@ -72,8 +72,11 @@ cp docker-compose.override.yml.example docker-compose.override.yml  # local imag
 
 ## Deploy
 
-Every push to `main` builds the image and then SSHes to the server, which
-pulls the image and restarts the service (`deploy.sh`). The server has **no
+Every push to `main` builds the image and then SSHes to the server, passing
+the digest of the image it just published; `deploy.sh` pins that digest in
+`.env` (`TELEGRIEF_IMAGE=…@sha256:…`), pulls it and restarts the service.
+Nothing is ever deployed by tag. Roll back with `./deploy.sh sha256:<digest>`
+on the server, or re-run an earlier workflow's `deploy` job. The server has **no
 git checkout**: it owns `docker-compose.yml`, `deploy.sh`, `.env`, `config/`,
 `secrets/` and `.data/`, so a push to `main` can change only what runs inside
 the container, never how it runs on the host. When the repo's reference copies

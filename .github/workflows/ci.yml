@@ -83,6 +83,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -108,12 +110,18 @@ jobs:
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf "$IMAGE@sha256:%s " *)
-      - run: docker buildx imagetools inspect "$IMAGE:${{ steps.meta.outputs.version }}"
+      - id: digest
+        run: |
+          docker buildx imagetools inspect "$IMAGE:${{ steps.meta.outputs.version }}"
+          digest=$(docker buildx imagetools inspect "$IMAGE:${{ steps.meta.outputs.version }}" --format '{{.Manifest.Digest}}')
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "index digest: $digest"
 
   # Pushes to main: the server pulls the new image and restarts. The server has
   # no git checkout; it owns its compose file and deploy.sh, and the deploy key
   # is `restrict`ed to a forced command running that script. A push to main can
-  # therefore change only the image, not how it runs on the host.
+  # therefore change only the image, not how it runs on the host. The image is
+  # deployed by the digest the manifest job just published, never by tag.
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: manifest
@@ -127,9 +135,11 @@ jobs:
           # Secrets, not variables: secrets are masked in the (public) job log.
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           TARGET: ${{ secrets.DEPLOY_TARGET }}
+          DIGEST: ${{ needs.manifest.outputs.digest }}
         run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "bad digest: '$DIGEST'" >&2; exit 1; }
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/deploy_key ~/.ssh/known_hosts
-          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes "$TARGET"
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes "$TARGET" "$DIGEST"
