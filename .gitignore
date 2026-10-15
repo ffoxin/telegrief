@@ -7,7 +7,6 @@ __pycache__/
 .superpowers/
 .data/
 secrets/
-config/folders.yaml
 docker-compose.override.yml
 *.session
 *.session-journal

@@ -3,7 +3,7 @@ services:
     # deploy.sh pins TELEGRIEF_IMAGE to ghcr.io/ffoxin/telegrief@sha256:... in .env
     image: ${TELEGRIEF_IMAGE:-ghcr.io/ffoxin/telegrief:latest}
     restart: unless-stopped
-    # Owner of ./.data, ./config and ./secrets on the host; set PUID/PGID in .env.
+    # Owner of ./.data and ./secrets on the host; set PUID/PGID in .env.
     user: "${PUID:-1000}:${PGID:-1000}"
     read_only: true
     tmpfs:
@@ -14,7 +14,6 @@ services:
       - no-new-privileges:true
     environment:
       - TZ=UTC
-      - RUN_AT=02:00
       - LOG_LEVEL=INFO
     secrets:
       - tg_api_id
@@ -22,9 +21,6 @@ services:
       - bot_token
     volumes:
       - ./.data:/app/data
-      # Directory, not file: a single-file bind mount pins the inode and goes
-      # stale when an editor saves folders.yaml via rename.
-      - ./config:/app/config:ro
     healthcheck:
       test:
         [
