@@ -102,10 +102,15 @@ class FolderConfig(BaseModel):
 _IGNORED_CATEGORIES = frozenset({"So", "Sk", "Cf", "Mn", "Me", "Cs"})
 
 
-def normalize_title(title: str) -> str:
-    """Lowercase title without emoji/symbols and with collapsed whitespace."""
+def strip_symbols(title: str) -> str:
+    """Title without emoji/symbols, whitespace collapsed, case kept."""
     kept = "".join(c for c in title if unicodedata.category(c) not in _IGNORED_CATEGORIES)
-    return " ".join(kept.split()).casefold()
+    return " ".join(kept.split())
+
+
+def normalize_title(title: str) -> str:
+    """Case-insensitive comparison key: ``strip_symbols`` plus casefold."""
+    return strip_symbols(title).casefold()
 
 
 class FoldersConfig(BaseModel):

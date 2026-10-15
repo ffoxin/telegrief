@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from telegrief.config import FolderConfig, FoldersConfig, Settings, load_folders
+from telegrief.config import FolderConfig, FoldersConfig, Settings, load_folders, strip_symbols
 
 REQUIRED = {"TG_API_ID": "123", "TG_API_HASH": "abc", "BOT_TOKEN": "tok"}
 
@@ -68,6 +68,12 @@ def test_folder_defaults(tmp_path: Path) -> None:
     assert folder.target is None
     assert cfg.get("Memes") is folder
     assert cfg.get("Nope") is None
+
+
+def test_strip_symbols_keeps_case_and_words() -> None:
+    assert strip_symbols("😊mEm") == "mEm"
+    assert strip_symbols("📰  My   News 🇺🇸") == "My News"
+    assert strip_symbols("🔥🔥") == ""
 
 
 def test_folders_get_ignores_emoji_and_case() -> None:

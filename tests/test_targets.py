@@ -51,10 +51,23 @@ async def test_reset_clears_mapping(storage: Storage) -> None:
     assert len(user.created) == 2
 
 
-async def test_created_channel_named_after_telegram_folder_title(storage: Storage) -> None:
+async def test_created_channel_named_after_telegram_folder_title_without_emoji(
+    storage: Storage,
+) -> None:
     user = FakeUser()
     user.folders["Memes"] = []
-    user.real_titles["Memes"] = "😊mEmEs"
+    user.real_titles["Memes"] = "😊mEmEs 🔥"
     resolver = TargetResolver(user, storage, "telegrief_bot")
     await resolver.resolve(FolderConfig(name="Memes"), NOW)
-    assert user.created == [("😊mEmEs · digest", "telegrief_bot")]
+    assert user.created == [("mEmEs · digest", "telegrief_bot")]
+
+
+async def test_created_channel_falls_back_to_yaml_name_for_emoji_only_title(
+    storage: Storage,
+) -> None:
+    user = FakeUser()
+    user.folders["Memes"] = []
+    user.real_titles["Memes"] = "🔥🔥"
+    resolver = TargetResolver(user, storage, "telegrief_bot")
+    await resolver.resolve(FolderConfig(name="Memes"), NOW)
+    assert user.created == [("Memes · digest", "telegrief_bot")]

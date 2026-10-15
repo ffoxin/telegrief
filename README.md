@@ -55,7 +55,8 @@ matches the Telegram folder title ignoring emoji (including animated ones),
 case and extra spaces, so `name: mem` finds the folder `😊mEm`; `/folders` prints
 the titles the service sees. Bot commands accept the same loose form
 (`/run mem`). The auto-created digest channel is titled after the real Telegram
-folder title (`😊mEm · digest`).
+folder title with emoji removed (`mEm · digest`); rename it freely, the
+service only remembers its id.
 
 ## Development
 
