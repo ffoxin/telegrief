@@ -37,11 +37,12 @@ services:
       timeout: 5s
       retries: 3
       start_period: 60s
+    # journald keeps logs across container recreates (every deploy):
+    #   journalctl CONTAINER_NAME=telegrief-app-1 --since -1h
     logging:
-      driver: "json-file"
+      driver: journald
       options:
-        max-size: "5m"
-        max-file: "5"
+        tag: telegrief
 
 secrets:
   tg_api_id:

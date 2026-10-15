@@ -84,6 +84,9 @@ of `docker-compose.yml` or `deploy.sh` change, update the server by hand.
 
 The container runs as `PUID:PGID` with a read-only root filesystem, all
 capabilities dropped and `no-new-privileges`; only `./.data` is writable.
+Logs go to journald so they survive the recreate every deploy does:
+`docker compose logs app` for the current container, or
+`journalctl CONTAINER_NAME=telegrief-app-1 --since -1d` for history.
 
 One-time setup:
 
