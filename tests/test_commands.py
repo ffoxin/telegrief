@@ -125,8 +125,11 @@ async def test_status_none_and_open(h: Harness) -> None:
 
 
 async def test_folders_lists_resolved_channels(h: Harness) -> None:
+    h.user.folder_titles = ["🔥 Memes", "My News"]
     text = await h.bot.command("folders", [])
-    assert text == "Memes (1):\n  Alpha (@a) · 2.9k\nMy News (0):"
+    assert text == (
+        "Telegram folders: 🔥 Memes · My News\nMemes (1):\n  Alpha (@a) · 2.9k\nMy News (0):"
+    )
 
 
 async def test_folders_reports_missing_folder(h: Harness) -> None:

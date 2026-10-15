@@ -1,12 +1,16 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
 from telethon.tl import types
 
+from telegrief.tg.protocols import FolderNotFound
 from telegrief.tg.user import (
     channel_peer_ids,
     compose_caption,
     filter_title,
+    match_folder,
+    normalize_title,
     raw_post_from_message,
     select_channel_ids,
 )
@@ -20,6 +24,40 @@ def test_filter_title_handles_plain_str() -> None:
 
 def test_filter_title_handles_text_with_entities() -> None:
     assert filter_title(SimpleNamespace(title=SimpleNamespace(text="Memes 🐸"))) == "Memes 🐸"
+
+
+def test_normalize_title_strips_emoji_and_case() -> None:
+    assert normalize_title("🔥 Memes 🔥") == "memes"
+    assert normalize_title("Memes\ufe0f") == "memes"
+    assert normalize_title("  My   News 📰 ") == "my news"
+    assert normalize_title("1️⃣ News 🇺🇸") == "1 news"
+    assert normalize_title("👨‍👩‍👧 Family") == "family"
+
+
+def _filter(title: str) -> SimpleNamespace:
+    return SimpleNamespace(title=SimpleNamespace(text=title))
+
+
+def test_match_folder_prefers_exact_title() -> None:
+    filters = [_filter("memes"), _filter("Memes")]
+    assert match_folder(filters, "Memes") is filters[1]
+
+
+def test_match_folder_ignores_emoji_and_case() -> None:
+    filters = [_filter("News 📰"), _filter("🔥 Memes 🔥")]
+    assert match_folder(filters, "memes") is filters[1]
+    assert match_folder(filters, "News") is filters[0]
+
+
+def test_match_folder_ambiguous_lists_candidates() -> None:
+    filters = [_filter("🔥 Memes"), _filter("Memes 🐸")]
+    with pytest.raises(FolderNotFound, match="ambiguous: 🔥 Memes · Memes 🐸"):
+        match_folder(filters, "Memes")
+
+
+def test_match_folder_missing() -> None:
+    with pytest.raises(FolderNotFound, match="Memes"):
+        match_folder([_filter("News")], "Memes")
 
 
 def test_select_channel_ids_union_minus_exclude_keeps_order() -> None:

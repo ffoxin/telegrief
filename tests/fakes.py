@@ -25,6 +25,7 @@ class FakeUser:
     def __init__(self) -> None:
         self.me_id = 1
         self.folders: dict[str, list[int]] = {}
+        self.folder_titles: list[str] | None = None
         self.channels: dict[int, ChannelInfo] = {}
         self.posts: dict[int, list[RawPost]] = {}
         self.read_markers: dict[int, int] = {}
@@ -48,6 +49,10 @@ class FakeUser:
     def _check_alive(self) -> None:
         if self.dead:
             raise SessionDead("AUTH_KEY_UNREGISTERED")
+
+    async def list_folder_titles(self) -> list[str]:
+        self._check_alive()
+        return list(self.folders) if self.folder_titles is None else list(self.folder_titles)
 
     async def folder_channels(self, folder_name: str) -> list[int]:
         self._check_alive()

@@ -95,7 +95,8 @@ class CommandHandler:
 
     async def _list_folders(self) -> str:
         now = self._clock()
-        lines: list[str] = []
+        titles = await self._user.list_folder_titles()
+        lines: list[str] = [f"Telegram folders: {' · '.join(titles) or '(none)'}"]
         for cfg in self._folders().folders:
             try:
                 channel_ids = await self._user.folder_channels(cfg.name)

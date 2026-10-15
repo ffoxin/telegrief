@@ -26,7 +26,7 @@ mkdir -p secrets .data
 echo 123456 > secrets/tg_api_id.txt
 echo your_api_hash > secrets/tg_api_hash.txt
 echo 123456:bot_token > secrets/bot_token.txt
-cp folders.yaml.example folders.yaml   # edit: folder titles exactly as in Telegram
+cp folders.yaml.example folders.yaml   # edit: your Telegram folder titles
 docker compose pull
 docker compose run --rm -it app telegrief login   # phone, code, 2FA once
 docker compose up -d
@@ -49,7 +49,9 @@ Environment (compose `environment:` or `/run/secrets/<name>` files):
 `WINDOW_FROM_H` (48), `WINDOW_TO_H` (24), `AUTO_NEXT_MIN_INTERVAL_S` (120),
 `MAX_COPY_MB` (200), `LOG_LEVEL` (INFO).
 
-`folders.yaml`: see `folders.yaml.example`. Re-read on every run.
+`folders.yaml`: see `folders.yaml.example`. Re-read on every run. Folder `name`
+matches the Telegram folder title ignoring emoji (including animated ones),
+case and extra spaces; `/folders` prints the titles the service sees.
 
 ## Development
 

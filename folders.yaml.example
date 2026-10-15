@@ -1,5 +1,5 @@
 folders:
-  - name: Memes            # Telegram folder title, exact match
+  - name: Memes            # Telegram folder title; emoji and case ignored
     batch_size: 10         # posts per batch (default 10)
     scoring: per_view      # raw | per_subscriber | per_view (default per_view)
     min_denominator: 200   # floor for views / subscribers (default 200)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import unicodedata
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable
 from datetime import datetime
 from pathlib import Path
@@ -66,6 +67,37 @@ def _translate_fatal[**P, R](
 def filter_title(dialog_filter: Any) -> str:
     title = getattr(dialog_filter, "title", "")
     return str(getattr(title, "text", title))
+
+
+# Unicode categories dropped when comparing folder titles: symbols (emoji, dingbats,
+# regional-indicator flags), format chars (ZWJ, keycap), nonspacing marks (variation
+# selectors), enclosing marks (keycap) and surrogates.
+_IGNORED_CATEGORIES = frozenset({"So", "Sk", "Cf", "Mn", "Me", "Cs"})
+
+
+def normalize_title(title: str) -> str:
+    """Lowercase title without emoji/symbols and with collapsed whitespace."""
+    kept = "".join(c for c in title if unicodedata.category(c) not in _IGNORED_CATEGORIES)
+    return " ".join(kept.split()).casefold()
+
+
+def match_folder(filters: Iterable[Any], folder_name: str) -> Any:
+    """Pick the dialog filter for ``folder_name``: exact title first, then normalized.
+
+    Raises FolderNotFound when nothing matches or several titles normalize alike.
+    """
+    candidates = list(filters)
+    for dialog_filter in candidates:
+        if filter_title(dialog_filter) == folder_name:
+            return dialog_filter
+    wanted = normalize_title(folder_name)
+    matches = [f for f in candidates if normalize_title(filter_title(f)) == wanted]
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        titles = " · ".join(filter_title(f) for f in matches)
+        raise FolderNotFound(f"{folder_name}: ambiguous: {titles}")
+    raise FolderNotFound(folder_name)
 
 
 def select_channel_ids(
@@ -158,41 +190,41 @@ class TelethonUser:
 
     # ---- folders -------------------------------------------------------------
 
-    @_translate_fatal
-    async def folder_channels(self, folder_name: str) -> list[int]:
+    async def _dialog_filters(self) -> list[Any]:
         result = await self._client(functions.messages.GetDialogFiltersRequest())
         filters = getattr(result, "filters", result)
-        for dialog_filter in filters:
-            if not isinstance(dialog_filter, types.DialogFilter | types.DialogFilterChatlist):
-                continue
-            if filter_title(dialog_filter) != folder_name:
-                continue
-            include = [
-                p for p in dialog_filter.include_peers if isinstance(p, types.InputPeerChannel)
-            ]
-            pinned = [
-                p for p in dialog_filter.pinned_peers if isinstance(p, types.InputPeerChannel)
-            ]
-            exclude = list(getattr(dialog_filter, "exclude_peers", []))
-            peers = {utils.get_peer_id(p): p for p in (*pinned, *include)}
-            all_broadcasts: list[int] = []
-            if getattr(dialog_filter, "broadcasts", False):
-                async for dialog in self._client.iter_dialogs():
-                    if is_broadcast(dialog.entity):
-                        all_broadcasts.append(int(dialog.id))
-            ids = select_channel_ids(
-                include=channel_peer_ids(include),
-                pinned=channel_peer_ids(pinned),
-                exclude=channel_peer_ids(exclude),
-                broadcasts=bool(getattr(dialog_filter, "broadcasts", False)),
-                all_broadcasts=all_broadcasts,
-            )
-            channels: list[int] = []
-            for channel_id in ids:
-                if await self._is_broadcast_channel(peers.get(channel_id, channel_id)):
-                    channels.append(channel_id)
-            return channels
-        raise FolderNotFound(folder_name)
+        return [
+            f for f in filters if isinstance(f, types.DialogFilter | types.DialogFilterChatlist)
+        ]
+
+    @_translate_fatal
+    async def list_folder_titles(self) -> list[str]:
+        return [filter_title(f) for f in await self._dialog_filters()]
+
+    @_translate_fatal
+    async def folder_channels(self, folder_name: str) -> list[int]:
+        dialog_filter = match_folder(await self._dialog_filters(), folder_name)
+        include = [p for p in dialog_filter.include_peers if isinstance(p, types.InputPeerChannel)]
+        pinned = [p for p in dialog_filter.pinned_peers if isinstance(p, types.InputPeerChannel)]
+        exclude = list(getattr(dialog_filter, "exclude_peers", []))
+        peers = {utils.get_peer_id(p): p for p in (*pinned, *include)}
+        all_broadcasts: list[int] = []
+        if getattr(dialog_filter, "broadcasts", False):
+            async for dialog in self._client.iter_dialogs():
+                if is_broadcast(dialog.entity):
+                    all_broadcasts.append(int(dialog.id))
+        ids = select_channel_ids(
+            include=channel_peer_ids(include),
+            pinned=channel_peer_ids(pinned),
+            exclude=channel_peer_ids(exclude),
+            broadcasts=bool(getattr(dialog_filter, "broadcasts", False)),
+            all_broadcasts=all_broadcasts,
+        )
+        channels: list[int] = []
+        for channel_id in ids:
+            if await self._is_broadcast_channel(peers.get(channel_id, channel_id)):
+                channels.append(channel_id)
+        return channels
 
     async def _is_broadcast_channel(self, peer: Any) -> bool:
         try:
