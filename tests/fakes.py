@@ -26,6 +26,7 @@ class FakeUser:
         self.me_id = 1
         self.folders: dict[str, list[int]] = {}
         self.folder_titles: list[str] | None = None
+        self.real_titles: dict[str, str] = {}
         self.channels: dict[int, ChannelInfo] = {}
         self.posts: dict[int, list[RawPost]] = {}
         self.read_markers: dict[int, int] = {}
@@ -53,6 +54,12 @@ class FakeUser:
     async def list_folder_titles(self) -> list[str]:
         self._check_alive()
         return list(self.folders) if self.folder_titles is None else list(self.folder_titles)
+
+    async def folder_title(self, folder_name: str) -> str:
+        self._check_alive()
+        if folder_name not in self.folders:
+            raise FolderNotFound(folder_name)
+        return self.real_titles.get(folder_name, folder_name)
 
     async def folder_channels(self, folder_name: str) -> list[int]:
         self._check_alive()

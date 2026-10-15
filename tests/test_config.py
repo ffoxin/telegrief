@@ -70,6 +70,19 @@ def test_folder_defaults(tmp_path: Path) -> None:
     assert cfg.get("Nope") is None
 
 
+def test_folders_get_ignores_emoji_and_case() -> None:
+    folder = FolderConfig(name="😊mEm")
+    cfg = FoldersConfig(folders=[folder, FolderConfig(name="📰 News")])
+    assert cfg.get("mem") is folder
+    assert cfg.get("MEM") is folder
+    assert cfg.get("news") is cfg.folders[1]
+
+
+def test_folders_reject_names_equal_after_normalization() -> None:
+    with pytest.raises(ValueError, match="unique"):
+        FoldersConfig(folders=[FolderConfig(name="🔥 Memes"), FolderConfig(name="memes")])
+
+
 def test_folder_overrides(tmp_path: Path) -> None:
     path = tmp_path / "folders.yaml"
     path.write_text(

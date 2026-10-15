@@ -29,6 +29,7 @@ async def test_yaml_target_wins(storage: Storage) -> None:
 
 async def test_creates_channel_once_and_stores_mapping(storage: Storage) -> None:
     user = FakeUser()
+    user.folders["Memes"] = []
     resolver = TargetResolver(user, storage, "telegrief_bot")
     cfg = FolderConfig(name="Memes")
     first = await resolver.resolve(cfg, NOW)
@@ -40,6 +41,7 @@ async def test_creates_channel_once_and_stores_mapping(storage: Storage) -> None
 
 async def test_reset_clears_mapping(storage: Storage) -> None:
     user = FakeUser()
+    user.folders["Memes"] = []
     resolver = TargetResolver(user, storage, "telegrief_bot")
     cfg = FolderConfig(name="Memes")
     first = await resolver.resolve(cfg, NOW)
@@ -47,3 +49,12 @@ async def test_reset_clears_mapping(storage: Storage) -> None:
     assert await resolver.reset("Memes") is False
     assert await resolver.resolve(cfg, NOW) != first
     assert len(user.created) == 2
+
+
+async def test_created_channel_named_after_telegram_folder_title(storage: Storage) -> None:
+    user = FakeUser()
+    user.folders["Memes"] = []
+    user.real_titles["Memes"] = "😊mEmEs"
+    resolver = TargetResolver(user, storage, "telegrief_bot")
+    await resolver.resolve(FolderConfig(name="Memes"), NOW)
+    assert user.created == [("😊mEmEs · digest", "telegrief_bot")]

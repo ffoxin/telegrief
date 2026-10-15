@@ -117,6 +117,9 @@ class CommandHandler:
         folder = " ".join(args)
         if not folder:
             return USAGE
+        cfg = self._folders().get(folder)
+        if cfg is not None:
+            folder = cfg.name
         if await self._targets.reset(folder):
             return f"reset {folder}; next run creates a new channel"
         return f"no digest channel mapping for {folder}"

@@ -26,9 +26,8 @@ class TargetResolver:
         existing = await self._storage.get_target(cfg.name)
         if existing is not None:
             return existing
-        channel_id = await self._user.create_digest_channel(
-            f"{cfg.name} · digest", self._bot_username
-        )
+        title = await self._user.folder_title(cfg.name)
+        channel_id = await self._user.create_digest_channel(f"{title} · digest", self._bot_username)
         await self._storage.set_target(cfg.name, channel_id, now)
         logger.info("folder {}: created digest channel {}", cfg.name, channel_id)
         return channel_id

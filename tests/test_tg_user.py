@@ -4,13 +4,13 @@ from types import SimpleNamespace
 import pytest
 from telethon.tl import types
 
+from telegrief.config import normalize_title
 from telegrief.tg.protocols import FolderNotFound
 from telegrief.tg.user import (
     channel_peer_ids,
     compose_caption,
     filter_title,
     match_folder,
-    normalize_title,
     raw_post_from_message,
     select_channel_ids,
 )

@@ -51,7 +51,10 @@ Environment (compose `environment:` or `/run/secrets/<name>` files):
 
 `folders.yaml`: see `folders.yaml.example`. Re-read on every run. Folder `name`
 matches the Telegram folder title ignoring emoji (including animated ones),
-case and extra spaces; `/folders` prints the titles the service sees.
+case and extra spaces, so `name: mem` finds the folder `😊mEm`; `/folders` prints
+the titles the service sees. Bot commands accept the same loose form
+(`/run mem`). The auto-created digest channel is titled after the real Telegram
+folder title (`😊mEm · digest`).
 
 ## Development
 

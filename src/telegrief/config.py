@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -95,6 +96,18 @@ class FolderConfig(BaseModel):
     target: int | None = None
 
 
+# Unicode categories dropped when comparing folder names: symbols (emoji, dingbats,
+# regional-indicator flags), format chars (ZWJ), nonspacing marks (variation selectors),
+# enclosing marks (keycap) and surrogates.
+_IGNORED_CATEGORIES = frozenset({"So", "Sk", "Cf", "Mn", "Me", "Cs"})
+
+
+def normalize_title(title: str) -> str:
+    """Lowercase title without emoji/symbols and with collapsed whitespace."""
+    kept = "".join(c for c in title if unicodedata.category(c) not in _IGNORED_CATEGORIES)
+    return " ".join(kept.split()).casefold()
+
+
 class FoldersConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -102,13 +115,18 @@ class FoldersConfig(BaseModel):
 
     @model_validator(mode="after")
     def _unique_names(self) -> FoldersConfig:
-        names = [f.name for f in self.folders]
+        names = [normalize_title(f.name) for f in self.folders]
         if len(names) != len(set(names)):
-            raise ValueError("folder names must be unique")
+            raise ValueError("folder names must be unique (ignoring emoji and case)")
         return self
 
     def get(self, name: str) -> FolderConfig | None:
-        return next((f for f in self.folders if f.name == name), None)
+        """Folder by name: exact match first, then ignoring emoji, case and spacing."""
+        exact = next((f for f in self.folders if f.name == name), None)
+        if exact is not None:
+            return exact
+        wanted = normalize_title(name)
+        return next((f for f in self.folders if normalize_title(f.name) == wanted), None)
 
 
 def load_folders(path: Path) -> FoldersConfig:

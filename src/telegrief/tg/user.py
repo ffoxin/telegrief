@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import functools
-import unicodedata
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +23,7 @@ from telethon.errors import (
 )
 from telethon.tl import functions, types
 
+from ..config import normalize_title
 from ..models import ChannelInfo, RawPost
 from .protocols import (
     ChannelUnavailable,
@@ -67,18 +67,6 @@ def _translate_fatal[**P, R](
 def filter_title(dialog_filter: Any) -> str:
     title = getattr(dialog_filter, "title", "")
     return str(getattr(title, "text", title))
-
-
-# Unicode categories dropped when comparing folder titles: symbols (emoji, dingbats,
-# regional-indicator flags), format chars (ZWJ, keycap), nonspacing marks (variation
-# selectors), enclosing marks (keycap) and surrogates.
-_IGNORED_CATEGORIES = frozenset({"So", "Sk", "Cf", "Mn", "Me", "Cs"})
-
-
-def normalize_title(title: str) -> str:
-    """Lowercase title without emoji/symbols and with collapsed whitespace."""
-    kept = "".join(c for c in title if unicodedata.category(c) not in _IGNORED_CATEGORIES)
-    return " ".join(kept.split()).casefold()
 
 
 def match_folder(filters: Iterable[Any], folder_name: str) -> Any:
@@ -200,6 +188,10 @@ class TelethonUser:
     @_translate_fatal
     async def list_folder_titles(self) -> list[str]:
         return [filter_title(f) for f in await self._dialog_filters()]
+
+    @_translate_fatal
+    async def folder_title(self, folder_name: str) -> str:
+        return filter_title(match_folder(await self._dialog_filters(), folder_name))
 
     @_translate_fatal
     async def folder_channels(self, folder_name: str) -> list[int]:

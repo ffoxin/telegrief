@@ -107,6 +107,16 @@ async def test_run_all_folders(h: Harness) -> None:
     assert await h.bot.command("run", []) == "✅ Memes: 3 posts\n✅ My News: 0 posts"
 
 
+async def test_run_accepts_text_only_name(h: Harness) -> None:
+    assert await h.bot.command("run", ["memes"]) == "✅ Memes: 3 posts"
+    assert await h.bot.command("run", ["my", "news", "24", "0"]) == "✅ My News: 0 posts"
+
+
+async def test_reset_accepts_text_only_name(h: Harness) -> None:
+    await h.bot.command("run", ["Memes"])
+    assert await h.bot.command("reset", ["memes"]) == "reset Memes; next run creates a new channel"
+
+
 async def test_run_unknown_folder(h: Harness) -> None:
     assert await h.bot.command("run", ["Nope"]) == "unknown folder: Nope"
 
