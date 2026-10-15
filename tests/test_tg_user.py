@@ -15,6 +15,7 @@ from telegrief.tg.user import (
     filter_title,
     match_folder,
     raw_post_from_message,
+    remove_peer,
     select_channel_ids,
 )
 
@@ -174,3 +175,14 @@ def test_add_pinned_peer_prepends_once() -> None:
     assert add_pinned_peer(dialog_filter, types.InputPeerChannel(2, 99)) is False
     assert add_pinned_peer(dialog_filter, old) is False
     assert len(dialog_filter.pinned_peers) == 2
+
+
+def test_remove_peer_drops_channel_from_pinned_and_included() -> None:
+    a, b = types.InputPeerChannel(1, 11), types.InputPeerChannel(2, 22)
+    dialog_filter = SimpleNamespace(
+        pinned_peers=[b, a], include_peers=[b, a, types.InputPeerSelf()]
+    )
+    assert remove_peer(dialog_filter, -1000000000002) is True
+    assert dialog_filter.pinned_peers == [a]
+    assert dialog_filter.include_peers == [a, types.InputPeerSelf()]
+    assert remove_peer(dialog_filter, -1000000000002) is False

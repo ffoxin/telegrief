@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -12,6 +13,13 @@ from .tg.protocols import GatewayError, SessionDead, UserGateway
 
 if TYPE_CHECKING:
     from .storage import Storage
+
+
+@dataclass(frozen=True)
+class ResetResult:
+    channel_id: int
+    removed_from_folder: bool
+    error: str | None = None
 
 
 class TargetResolver:
@@ -45,5 +53,19 @@ class TargetResolver:
         except GatewayError as exc:
             logger.warning("folder {}: cannot add digest channel to the folder: {}", folder, exc)
 
-    async def reset(self, folder: str) -> bool:
-        return await self._storage.delete_target(folder)
+    async def reset(self, folder: str) -> ResetResult | None:
+        """Forget the digest channel and take it out of the folder so it is not a source."""
+        channel_id = await self._storage.get_target(folder)
+        if channel_id is None:
+            return None
+        await self._storage.delete_target(folder)
+        try:
+            removed = await self._user.remove_from_folder(folder, channel_id)
+        except SessionDead:
+            raise
+        except GatewayError as exc:
+            logger.warning(
+                "folder {}: cannot remove old digest channel {}: {}", folder, channel_id, exc
+            )
+            return ResetResult(channel_id, False, str(exc))
+        return ResetResult(channel_id, removed)

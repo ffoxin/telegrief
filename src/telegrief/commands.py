@@ -121,6 +121,17 @@ class CommandHandler:
         cfg = self._folders().get(folder)
         if cfg is not None:
             folder = cfg.name
-        if await self._targets.reset(folder):
-            return f"reset {folder}; next run creates a new channel"
-        return f"no digest channel mapping for {folder}"
+        result = await self._targets.reset(folder)
+        if result is None:
+            return f"no digest channel mapping for {folder}"
+        if result.error is not None:
+            return (
+                f"reset {folder}; ⚠️ old digest channel {result.channel_id} still in the folder "
+                f"({result.error}); remove it by hand; next run creates a new one"
+            )
+        if result.removed_from_folder:
+            return (
+                f"reset {folder}; old digest channel removed from the folder; "
+                "next run creates a new one"
+            )
+        return f"reset {folder}; next run creates a new one"

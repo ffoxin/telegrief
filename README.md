@@ -40,7 +40,8 @@ Then open the bot chat and send `/folders` to verify channel detection, and
 - `/run [folder] [from_h] [to_h]` — run now; defaults `48 24`.
 - `/status` — latest digest per folder.
 - `/folders` — channels resolved per folder.
-- `/reset <folder>` — forget the digest channel; next run creates a new one.
+- `/reset <folder>` — forget the digest channel and take it out of the folder;
+  next run creates a new one. The old channel itself is kept.
 - anything else (`/start`, `/help`) — usage.
 
 ## Configuration

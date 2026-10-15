@@ -45,10 +45,39 @@ async def test_reset_clears_mapping(storage: Storage) -> None:
     resolver = TargetResolver(user, storage, "telegrief_bot")
     cfg = FolderConfig(name="Memes")
     first = await resolver.resolve(cfg, NOW)
-    assert await resolver.reset("Memes") is True
-    assert await resolver.reset("Memes") is False
+    result = await resolver.reset("Memes")
+    assert result is not None
+    assert (result.channel_id, result.removed_from_folder, result.error) == (first, True, None)
+    assert user.folder_unpins == [("Memes", first)]
+    assert first not in user.folders["Memes"]
+    assert await resolver.reset("Memes") is None
     assert await resolver.resolve(cfg, NOW) != first
     assert len(user.created) == 2
+
+
+async def test_reset_reports_channel_not_in_folder(storage: Storage) -> None:
+    user = FakeUser()
+    user.folders["Memes"] = []
+    resolver = TargetResolver(user, storage, "telegrief_bot")
+    first = await resolver.resolve(FolderConfig(name="Memes"), NOW)
+    user.folders["Memes"].remove(first)  # user already removed it by hand
+    result = await resolver.reset("Memes")
+    assert result is not None
+    assert (result.removed_from_folder, result.error) == (False, None)
+
+
+async def test_reset_keeps_mapping_deleted_when_folder_update_fails(storage: Storage) -> None:
+    user = FakeUser()
+    user.folders["Memes"] = []
+    resolver = TargetResolver(user, storage, "telegrief_bot")
+    first = await resolver.resolve(FolderConfig(name="Memes"), NOW)
+    user.fail_unpin = True
+    result = await resolver.reset("Memes")
+    assert result is not None
+    assert result.removed_from_folder is False
+    assert result.error is not None and "FILTER_INCLUDE_EMPTY" in result.error
+    assert await storage.get_target("Memes") is None
+    assert first in user.folders["Memes"]
 
 
 async def test_created_channel_named_after_telegram_folder_title_without_emoji(

@@ -86,6 +86,24 @@ def add_pinned_peer(dialog_filter: Any, peer: Any) -> bool:
     return True
 
 
+def remove_peer(dialog_filter: Any, peer_id: int) -> bool:
+    """Drop the channel with marked id ``peer_id`` from pinned and included peers."""
+
+    def keep(peers: list[Any]) -> list[Any]:
+        return [
+            p
+            for p in peers
+            if not (isinstance(p, types.InputPeerChannel) and utils.get_peer_id(p) == peer_id)
+        ]
+
+    pinned, included = keep(dialog_filter.pinned_peers), keep(dialog_filter.include_peers)
+    changed = len(pinned) != len(dialog_filter.pinned_peers) or len(included) != len(
+        dialog_filter.include_peers
+    )
+    dialog_filter.pinned_peers, dialog_filter.include_peers = pinned, included
+    return changed
+
+
 def match_folder(filters: Iterable[Any], folder_name: str) -> Any:
     """Pick the dialog filter for ``folder_name``: exact title first, then normalized.
 
@@ -288,6 +306,21 @@ class TelethonUser:
         dialog_filter = match_folder(await self._dialog_filters(), folder_name)
         peer = await self._client.get_input_entity(channel_id)
         if not add_pinned_peer(dialog_filter, peer):
+            return False
+        try:
+            await self._client(
+                functions.messages.UpdateDialogFilterRequest(
+                    id=dialog_filter.id, filter=dialog_filter
+                )
+            )
+        except RPCError as exc:
+            raise GatewayError(f"cannot update folder {folder_name!r}: {exc}") from exc
+        return True
+
+    @_translate_fatal
+    async def remove_from_folder(self, folder_name: str, channel_id: int) -> bool:
+        dialog_filter = match_folder(await self._dialog_filters(), folder_name)
+        if not remove_peer(dialog_filter, channel_id):
             return False
         try:
             await self._client(

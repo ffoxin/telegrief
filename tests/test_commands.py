@@ -114,7 +114,9 @@ async def test_run_accepts_text_only_name(h: Harness) -> None:
 
 async def test_reset_accepts_text_only_name(h: Harness) -> None:
     await h.bot.command("run", ["Memes"])
-    assert await h.bot.command("reset", ["memes"]) == "reset Memes; next run creates a new channel"
+    assert await h.bot.command("reset", ["memes"]) == (
+        "reset Memes; old digest channel removed from the folder; next run creates a new one"
+    )
 
 
 async def test_run_unknown_folder(h: Harness) -> None:
@@ -159,7 +161,15 @@ async def test_reset(h: Harness) -> None:
     assert await h.bot.command("reset", []) == USAGE
     assert await h.bot.command("reset", ["Memes"]) == "no digest channel mapping for Memes"
     await h.bot.command("run", ["Memes"])
-    assert await h.bot.command("reset", ["Memes"]) == "reset Memes; next run creates a new channel"
+    assert await h.bot.command("reset", ["Memes"]) == (
+        "reset Memes; old digest channel removed from the folder; next run creates a new one"
+    )
+    await h.bot.command("run", ["Memes"])
+    h.user.fail_unpin = True
+    text = await h.bot.command("reset", ["Memes"])
+    assert text.startswith("reset Memes; ⚠️ old digest channel ")
+    assert "still in the folder (FILTER_INCLUDE_EMPTY)" in text
+    assert text.endswith("remove it by hand; next run creates a new one")
 
 
 async def test_unknown_command_shows_usage(h: Harness) -> None:

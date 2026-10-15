@@ -44,6 +44,8 @@ class FakeUser:
         self.created: list[tuple[str, str]] = []
         self.folder_pins: list[tuple[str, int]] = []
         self.fail_pin = False
+        self.folder_unpins: list[tuple[str, int]] = []
+        self.fail_unpin = False
         self.pinged: list[str] = []
         self.channel_info_calls = 0
         self._next_relay_id = 1000
@@ -94,6 +96,18 @@ class FakeUser:
             return False
         self.folders[folder_name].insert(0, channel_id)
         self.folder_pins.append((folder_name, channel_id))
+        return True
+
+    async def remove_from_folder(self, folder_name: str, channel_id: int) -> bool:
+        self._check_alive()
+        if self.fail_unpin:
+            raise GatewayError("FILTER_INCLUDE_EMPTY")
+        if folder_name not in self.folders:
+            raise FolderNotFound(folder_name)
+        if channel_id not in self.folders[folder_name]:
+            return False
+        self.folders[folder_name].remove(channel_id)
+        self.folder_unpins.append((folder_name, channel_id))
         return True
 
     async def create_digest_channel(self, title: str, bot_username: str) -> int:
