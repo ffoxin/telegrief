@@ -4,24 +4,26 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
+from .config import normalize_title
 from .models import (
     ChannelInfo,
     Delivery,
-    Digest,
-    DigestItem,
-    DigestStatus,
+    Folder,
+    FolderConfig,
     ItemState,
+    QueueItem,
     RawPost,
     ScoredPost,
 )
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
+PENDING_ORDER = "ORDER BY score DESC, engagement DESC, date ASC"
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -47,34 +49,43 @@ def _channel_from_row(row: aiosqlite.Row) -> ChannelInfo:
     )
 
 
-def _digest_from_row(row: aiosqlite.Row) -> Digest:
-    return Digest(
+def _folder_from_row(row: aiosqlite.Row) -> Folder:
+    return Folder(
         id=row["id"],
-        folder=row["folder"],
-        target=row["target"],
-        window_start=_req_dt(row["window_start"]),
-        window_end=_req_dt(row["window_end"]),
-        total=row["total"],
-        status=DigestStatus(row["status"]),
+        name=row["name"],
+        config=FolderConfig(
+            min_age_h=row["min_age_h"],
+            period_h=row["period_h"],
+            batch_size=row["batch_size"],
+            scoring=row["scoring"],
+            min_denominator=row["min_denominator"],
+            max_items=row["max_items"],
+            max_age_d=row["max_age_d"],
+        ),
+        next_run_at=_req_dt(row["next_run_at"]),
         created_at=_req_dt(row["created_at"]),
-        title_msg_id=row["title_msg_id"],
-        footer_msg_id=row["footer_msg_id"],
-        footer_text=row["footer_text"],
+        last_fetch_at=_dt(row["last_fetch_at"]),
         last_batch_at=_dt(row["last_batch_at"]),
+        last_error=row["last_error"],
+        fetch_msg_id=row["fetch_msg_id"],
+        fetch_added=row["fetch_added"],
+        button_msg_id=row["button_msg_id"],
+        button_text=row["button_text"],
     )
 
 
-def _item_from_row(row: aiosqlite.Row) -> DigestItem:
-    return DigestItem(
-        digest_id=row["digest_id"],
-        rank=row["rank"],
+def _queue_item_from_row(row: aiosqlite.Row) -> QueueItem:
+    return QueueItem(
+        folder_id=row["folder_id"],
         channel_id=row["channel_id"],
         msg_ids=tuple(json.loads(row["msg_ids"])),
+        date=_req_dt(row["date"]),
         engagement=row["engagement"],
         views=row["views"],
         score=row["score"],
         noforwards=bool(row["noforwards"]),
         preview=row["preview"],
+        queued_at=_req_dt(row["queued_at"]),
         state=ItemState(row["state"]),
         delivery=Delivery(row["delivery"]) if row["delivery"] else None,
         sent_msg_id=row["sent_msg_id"],
@@ -91,6 +102,7 @@ class Storage:
         conn = await aiosqlite.connect(str(path))
         conn.row_factory = aiosqlite.Row
         await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA foreign_keys=ON")
         storage = cls(conn)
         await storage.migrate()
         return storage
@@ -225,162 +237,240 @@ class Storage:
         await self._conn.commit()
         return cur.rowcount > 0
 
-    # ---- digests -------------------------------------------------------------
+    # ---- folders -------------------------------------------------------------
 
-    async def create_digest(
-        self,
-        folder: str,
-        target: int,
-        window_start: datetime,
-        window_end: datetime,
-        scored: list[ScoredPost],
-        now: datetime,
-    ) -> Digest:
-        await self._conn.execute(
-            "UPDATE digests SET status = ? WHERE target = ? AND status = ?",
-            (DigestStatus.DONE, target, DigestStatus.OPEN),
-        )
+    async def create_folder(self, name: str, cfg: FolderConfig, now: datetime) -> Folder:
         cur = await self._conn.execute(
             """
-            INSERT INTO digests
-                (folder, target, window_start, window_end, total, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO folders
+                (name, min_age_h, period_h, batch_size, scoring, min_denominator, max_items,
+                 max_age_d, next_run_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                folder,
-                target,
-                window_start.isoformat(),
-                window_end.isoformat(),
-                len(scored),
-                DigestStatus.OPEN,
+                name,
+                cfg.min_age_h,
+                cfg.period_h,
+                cfg.batch_size,
+                cfg.scoring,
+                cfg.min_denominator,
+                cfg.max_items,
+                cfg.max_age_d,
+                now.isoformat(),
                 now.isoformat(),
             ),
         )
-        digest_id = cur.lastrowid
-        assert digest_id is not None
+        await self._conn.commit()
+        folder_id = cur.lastrowid
+        assert folder_id is not None
+        return Folder(id=folder_id, name=name, config=cfg, next_run_at=now, created_at=now)
+
+    async def update_folder_config(self, folder_id: int, cfg: FolderConfig) -> None:
+        await self._conn.execute(
+            """
+            UPDATE folders SET min_age_h = ?, period_h = ?, batch_size = ?, scoring = ?,
+                min_denominator = ?, max_items = ?, max_age_d = ?
+            WHERE id = ?
+            """,
+            (
+                cfg.min_age_h,
+                cfg.period_h,
+                cfg.batch_size,
+                cfg.scoring,
+                cfg.min_denominator,
+                cfg.max_items,
+                cfg.max_age_d,
+                folder_id,
+            ),
+        )
+        await self._conn.commit()
+
+    async def update_folder_state(self, folder: Folder) -> None:
+        """Persist the runtime fields only; config and schedule have their own writers."""
+        await self._conn.execute(
+            """
+            UPDATE folders SET last_fetch_at = ?, last_batch_at = ?, last_error = ?,
+                fetch_msg_id = ?, fetch_added = ?, button_msg_id = ?, button_text = ?
+            WHERE id = ?
+            """,
+            (
+                _iso(folder.last_fetch_at),
+                _iso(folder.last_batch_at),
+                folder.last_error,
+                folder.fetch_msg_id,
+                folder.fetch_added,
+                folder.button_msg_id,
+                folder.button_text,
+                folder.id,
+            ),
+        )
+        await self._conn.commit()
+
+    async def set_next_run(self, folder_id: int, when: datetime) -> None:
+        await self._conn.execute(
+            "UPDATE folders SET next_run_at = ? WHERE id = ?", (when.isoformat(), folder_id)
+        )
+        await self._conn.commit()
+
+    async def delete_folder(self, folder_id: int) -> None:
+        await self._conn.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+        await self._conn.commit()
+
+    async def get_folder(self, folder_id: int) -> Folder | None:
+        row = await self._fetchone("SELECT * FROM folders WHERE id = ?", (folder_id,))
+        return _folder_from_row(row) if row is not None else None
+
+    async def find_folder(self, name: str) -> Folder | None:
+        """Folder by name: exact match first, then ignoring emoji, case and spacing."""
+        folders = await self.list_folders()
+        exact = next((f for f in folders if f.name == name), None)
+        if exact is not None:
+            return exact
+        wanted = normalize_title(name)
+        return next((f for f in folders if normalize_title(f.name) == wanted), None)
+
+    async def list_folders(self) -> list[Folder]:
+        rows = await self._fetchall("SELECT * FROM folders ORDER BY id")
+        return [_folder_from_row(r) for r in rows]
+
+    async def due_folders(self, now: datetime) -> list[Folder]:
+        rows = await self._fetchall(
+            "SELECT * FROM folders WHERE next_run_at <= ? ORDER BY next_run_at, id",
+            (now.isoformat(),),
+        )
+        return [_folder_from_row(r) for r in rows]
+
+    async def folder_for_target(self, channel_id: int) -> Folder | None:
+        row = await self._fetchone(
+            """
+            SELECT f.* FROM folders f JOIN targets t ON t.folder = f.name
+            WHERE t.channel_id = ?
+            """,
+            (channel_id,),
+        )
+        return _folder_from_row(row) if row is not None else None
+
+    # ---- queue ---------------------------------------------------------------
+
+    async def _count_rows(self, folder_id: int) -> int:
+        row = await self._fetchone(
+            "SELECT COUNT(*) AS n FROM queue WHERE folder_id = ?", (folder_id,)
+        )
+        return int(row["n"]) if row is not None else 0
+
+    async def enqueue(self, folder_id: int, scored: Iterable[ScoredPost], now: datetime) -> int:
+        """Insert new posts as pending, refresh pending ones, leave sent/failed alone.
+
+        Returns the number of newly inserted rows.
+        """
+        before = await self._count_rows(folder_id)
         await self._conn.executemany(
             """
-            INSERT INTO digest_items
-                (digest_id, rank, channel_id, msg_id, msg_ids, engagement, views, score,
-                 noforwards, preview, state)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO queue
+                (folder_id, channel_id, msg_id, msg_ids, date, engagement, views, score,
+                 noforwards, preview, state, queued_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+            ON CONFLICT(folder_id, channel_id, msg_id) DO UPDATE SET
+                msg_ids = excluded.msg_ids,
+                engagement = excluded.engagement,
+                views = excluded.views,
+                score = excluded.score,
+                noforwards = excluded.noforwards,
+                preview = excluded.preview
+            WHERE queue.state = 'pending'
             """,
             [
                 (
-                    digest_id,
-                    rank,
+                    folder_id,
                     s.post.channel_id,
                     s.post.msg_id,
                     json.dumps(list(s.post.msg_ids)),
+                    s.post.date.isoformat(),
                     s.engagement,
                     s.post.views,
                     s.score,
                     int(s.post.noforwards),
                     s.post.preview,
-                    ItemState.PENDING,
+                    now.isoformat(),
                 )
-                for rank, s in enumerate(scored, start=1)
+                for s in scored
             ],
         )
         await self._conn.commit()
-        return Digest(
-            id=digest_id,
-            folder=folder,
-            target=target,
-            window_start=window_start,
-            window_end=window_end,
-            total=len(scored),
-            status=DigestStatus.OPEN,
-            created_at=now,
-        )
+        return await self._count_rows(folder_id) - before
 
-    async def get_digest(self, digest_id: int) -> Digest | None:
-        row = await self._fetchone("SELECT * FROM digests WHERE id = ?", (digest_id,))
-        return _digest_from_row(row) if row is not None else None
-
-    async def open_digest_for_target(self, target: int) -> Digest | None:
-        row = await self._fetchone(
-            "SELECT * FROM digests WHERE target = ? AND status = ? ORDER BY id DESC LIMIT 1",
-            (target, DigestStatus.OPEN),
-        )
-        return _digest_from_row(row) if row is not None else None
-
-    async def open_digests(self) -> list[Digest]:
-        rows = await self._fetchall(
-            "SELECT * FROM digests WHERE status = ? ORDER BY id", (DigestStatus.OPEN,)
-        )
-        return [_digest_from_row(r) for r in rows]
-
-    async def latest_digest(self, folder: str) -> Digest | None:
-        row = await self._fetchone(
-            "SELECT * FROM digests WHERE folder = ? ORDER BY id DESC LIMIT 1", (folder,)
-        )
-        return _digest_from_row(row) if row is not None else None
-
-    async def update_digest(self, digest: Digest) -> None:
-        """Persist title/footer/status/last_batch_at. Only an OPEN row is updated, so a
-        batch that was in flight when a new run closed the digest cannot reopen it."""
+    async def prune(self, folder_id: int, cfg: FolderConfig, now: datetime) -> None:
+        """Drop posts older than max_age (any state), then cap pending rows to max_items."""
+        cutoff = (now - timedelta(days=cfg.max_age_d)).isoformat()
         await self._conn.execute(
-            """
-            UPDATE digests SET title_msg_id = ?, footer_msg_id = ?, footer_text = ?,
-                status = ?, last_batch_at = ?
-            WHERE id = ? AND status = ?
+            "DELETE FROM queue WHERE folder_id = ? AND date < ?", (folder_id, cutoff)
+        )
+        await self._conn.execute(
+            f"""
+            DELETE FROM queue WHERE folder_id = ? AND state = 'pending' AND rowid NOT IN (
+                SELECT rowid FROM queue WHERE folder_id = ? AND state = 'pending'
+                {PENDING_ORDER} LIMIT ?
+            )
             """,
-            (
-                digest.title_msg_id,
-                digest.footer_msg_id,
-                digest.footer_text,
-                digest.status,
-                _iso(digest.last_batch_at),
-                digest.id,
-                DigestStatus.OPEN,
-            ),
+            (folder_id, folder_id, cfg.max_items),
         )
         await self._conn.commit()
 
-    # ---- items ---------------------------------------------------------------
-
-    async def pending_items(self, digest_id: int, limit: int) -> list[DigestItem]:
+    async def pending_items(self, folder_id: int, limit: int | None = None) -> list[QueueItem]:
         rows = await self._fetchall(
-            """
-            SELECT * FROM digest_items WHERE digest_id = ? AND state = ?
-            ORDER BY rank LIMIT ?
+            f"""
+            SELECT * FROM queue WHERE folder_id = ? AND state = 'pending'
+            {PENDING_ORDER} LIMIT ?
             """,
-            (digest_id, ItemState.PENDING, limit),
+            (folder_id, -1 if limit is None else limit),
         )
-        return [_item_from_row(r) for r in rows]
+        return [_queue_item_from_row(r) for r in rows]
 
-    async def count_items(self, digest_id: int, state: ItemState) -> int:
+    async def count_items(self, folder_id: int, state: ItemState) -> int:
         row = await self._fetchone(
-            "SELECT COUNT(*) AS n FROM digest_items WHERE digest_id = ? AND state = ?",
-            (digest_id, state),
+            "SELECT COUNT(*) AS n FROM queue WHERE folder_id = ? AND state = ?", (folder_id, state)
         )
         return int(row["n"]) if row is not None else 0
 
-    async def batch_items(self, digest_id: int, sent_at: datetime) -> list[DigestItem]:
+    async def count_pending(self, folder_id: int) -> int:
+        return await self.count_items(folder_id, ItemState.PENDING)
+
+    async def batch_items(self, folder_id: int, sent_at: datetime) -> list[QueueItem]:
         """Items sent in one batch: send_batch stamps them all with the batch time."""
         rows = await self._fetchall(
-            """
-            SELECT * FROM digest_items WHERE digest_id = ? AND state = ? AND sent_at = ?
-            ORDER BY rank
+            f"""
+            SELECT * FROM queue WHERE folder_id = ? AND state = 'sent' AND sent_at = ?
+            {PENDING_ORDER}
             """,
-            (digest_id, ItemState.SENT, _iso(sent_at)),
+            (folder_id, sent_at.isoformat()),
         )
-        return [_item_from_row(r) for r in rows]
+        return [_queue_item_from_row(r) for r in rows]
 
-    async def update_item(self, item: DigestItem) -> None:
+    async def update_item(self, item: QueueItem) -> None:
         await self._conn.execute(
             """
-            UPDATE digest_items SET state = ?, delivery = ?, sent_msg_id = ?, sent_at = ?
-            WHERE digest_id = ? AND rank = ?
+            UPDATE queue SET state = ?, delivery = ?, sent_msg_id = ?, sent_at = ?
+            WHERE folder_id = ? AND channel_id = ? AND msg_id = ?
             """,
             (
                 item.state,
                 item.delivery,
                 item.sent_msg_id,
                 _iso(item.sent_at),
-                item.digest_id,
-                item.rank,
+                item.folder_id,
+                item.channel_id,
+                item.msg_id,
             ),
+        )
+        await self._conn.commit()
+
+    async def update_scores(self, folder_id: int, scores: Iterable[tuple[int, int, float]]) -> None:
+        """Re-score pending rows: (channel_id, msg_id, score) triples."""
+        await self._conn.executemany(
+            """
+            UPDATE queue SET score = ?
+            WHERE folder_id = ? AND channel_id = ? AND msg_id = ? AND state = 'pending'
+            """,
+            [(score, folder_id, channel_id, msg_id) for channel_id, msg_id, score in scores],
         )
         await self._conn.commit()
