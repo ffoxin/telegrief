@@ -1,16 +1,23 @@
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from telegrief.collector import Collector
-from telegrief.config import FolderConfig, FoldersConfig, Settings
+from telegrief.config import Settings
 from telegrief.delivery import Deliverer
 from telegrief.digest import DigestService
-from telegrief.models import ChannelInfo, DigestStatus, ItemState, RawPost
+from telegrief.models import (
+    ChannelInfo,
+    Folder,
+    FolderConfig,
+    ItemState,
+    Post,
+    RawPost,
+    ScoredPost,
+)
 from telegrief.storage import Storage
 from telegrief.targets import TargetResolver
 from telegrief.tg.protocols import SessionDead
@@ -21,6 +28,9 @@ CH_ID = -1001
 CH = ChannelInfo(
     id=CH_ID, username="a", title="A", subscribers=100, reactions_enabled=True, noforwards=False
 )
+# Message ids in the digest channel after the first fetch of N>=2 posts with batch 2:
+# note=1, posts=2,3, footer=4.
+NOTE, FOOTER = 1, 4
 
 
 class Clock:
@@ -48,7 +58,9 @@ class Deferred:
 
 
 class Harness:
-    def __init__(self, storage: Storage, tmp_path: Path, batch_size: int = 2) -> None:
+    """Service over fakes. Advance the clock between batches: sent_at is the batch key."""
+
+    def __init__(self, storage: Storage, tmp_path: Path) -> None:
         self.user = FakeUser()
         self.bot = FakeBot()
         self.user.bot = self.bot
@@ -56,7 +68,6 @@ class Harness:
         self.clock = Clock()
         self.defer = Deferred()
         self.fatal: list[Exception] = []
-        self.folders = FoldersConfig(folders=[FolderConfig(name="Memes", batch_size=batch_size)])
         self.settings = Settings(
             _secrets_dir=None,
             tg_api_id=1,
@@ -76,7 +87,6 @@ class Harness:
             targets=self.targets,
             deliverer=self.deliverer,
             settings=self.settings,
-            folders=lambda: self.folders,
             clock=self.clock,
             defer=self.defer,
             on_fatal=self.fatal.append,
@@ -84,27 +94,63 @@ class Harness:
         self.service.bind()
         self.user.folders["Memes"] = [CH_ID]
         self.user.channels[CH_ID] = CH
+        self.folder: Folder
 
-    def add_posts(self, n: int) -> None:
+    def add_posts(self, n: int, *, start: int = 1, top: int = 100, age_h: int = 30) -> None:
+        """Posts start..start+n-1 with reactions top-i (so lower ids score higher)."""
         self.user.posts[CH_ID] = [
             RawPost(
                 channel_id=CH_ID,
                 msg_id=i,
                 grouped_id=None,
-                date=NOW - timedelta(hours=30),
+                date=NOW - timedelta(hours=age_h),
                 views=1000,
                 forwards=0,
-                reactions=100 - i,
+                reactions=top - i,
                 replies=0,
                 preview=f"p{i}",
                 noforwards=False,
             )
-            for i in range(1, n + 1)
+            for i in range(start, start + n)
         ]
+
+    async def fetch(self, **kwargs: object) -> str:
+        return await self.service.fetch(self.folder.id, **kwargs)  # type: ignore[arg-type]
+
+    async def reload(self) -> Folder:
+        folder = await self.storage.get_folder(self.folder.id)
+        assert folder is not None
+        return folder
 
     @property
     def target(self) -> int:
         return next(iter(self.bot.messages))
+
+    @property
+    def fid(self) -> int:
+        return self.folder.id
+
+
+async def make(storage: Storage, tmp_path: Path, **cfg: object) -> Harness:
+    h = Harness(storage, tmp_path)
+    cfg.setdefault("batch_size", 2)
+    h.folder = await storage.create_folder("Memes", FolderConfig(**cfg), NOW)  # type: ignore[arg-type]
+    return h
+
+
+def scored(msg_id: int, reactions: int) -> ScoredPost:
+    post = Post(
+        channel_id=CH_ID,
+        msg_ids=(msg_id,),
+        date=NOW - timedelta(hours=30),
+        views=1000,
+        forwards=0,
+        reactions=reactions,
+        replies=0,
+        preview="",
+        noforwards=False,
+    )
+    return ScoredPost(post, CH, reactions, reactions / 1000)
 
 
 @pytest.fixture
@@ -115,58 +161,193 @@ async def storage(tmp_path: Path) -> AsyncIterator[Storage]:
 
 
 @pytest.fixture
-def h(storage: Storage, tmp_path: Path) -> Harness:
-    return Harness(storage, tmp_path)
+async def h(storage: Storage, tmp_path: Path) -> Harness:
+    return await make(storage, tmp_path)
 
 
-async def test_run_folder_creates_digest_and_sends_first_batch(h: Harness) -> None:
+# ---- fetch -------------------------------------------------------------------
+
+
+async def test_fetch_posts_note_and_first_batch(h: Harness) -> None:
     h.add_posts(5)
-    result = await h.service.run_folder(h.folders.folders[0])
-    assert result == "✅ Memes: 5 posts"
+    assert await h.fetch() == "✅ Memes: +5 · 5 queued"
     assert h.user.created == [("Memes · digest", "telegrief_bot")]
     target = h.target
     assert h.user.folder_pins == [("Memes", target)]
-    texts = h.bot.texts(target)
-    assert texts[0] == "📂 Memes · 2026-10-14 · 5 posts from 1 channels"
+    assert h.bot.messages[target][0] == (NOTE, "📥 +5 · 5 queued", h.fid)
     assert h.user.forwarded == [(CH_ID, [1]), (CH_ID, [2])]
     footer_id, footer, next_id = h.bot.last(target)
-    assert footer.splitlines()[-1] == "shown 2/5"
-    assert next_id == 1
-    digest = await h.storage.get_digest(1)
-    assert digest is not None
-    assert digest.status == DigestStatus.OPEN
-    assert digest.footer_msg_id == footer_id
-    assert digest.footer_text == footer
-    assert digest.last_batch_at == NOW
-    # title=1, posts=2,3, footer=4
-    assert [i.sent_msg_id for i in await h.storage.batch_items(1, NOW)] == [2, 3]
+    assert footer_id == FOOTER and next_id == h.fid
+    assert footer.splitlines()[-1] == "queued 3"
+    assert len(footer.splitlines()) == 3
+    assert h.bot.edits == [(target, NOTE, "📥 +5 · 5 queued", None)]  # note lost its button
+    folder = await h.reload()
+    assert folder.last_fetch_at == NOW and folder.last_batch_at == NOW
+    assert (folder.fetch_msg_id, folder.fetch_added) == (None, 0)
+    assert (folder.button_msg_id, folder.button_text) == (FOOTER, footer)
+    assert [i.sent_msg_id for i in await h.storage.batch_items(h.fid, NOW)] == [2, 3]
 
 
-async def test_window_uses_settings_and_overrides(h: Harness) -> None:
-    h.add_posts(1)
-    await h.service.run_folder(h.folders.folders[0])
-    digest = await h.storage.get_digest(1)
-    assert digest is not None
-    assert digest.window_start == NOW - timedelta(hours=48)
-    assert digest.window_end == NOW - timedelta(hours=24)
-    h.user.posts[CH_ID][0] = replace(h.user.posts[CH_ID][0], date=NOW - timedelta(hours=1))
-    result = await h.service.run_folder(h.folders.folders[0], from_h=24, to_h=0)
-    assert result == "✅ Memes: 1 posts"
-    digest = await h.storage.get_digest(2)
-    assert digest is not None and digest.window_end == NOW
+async def test_fetch_window_from_reference_time_and_overrides(h: Harness) -> None:
+    h.add_posts(1)  # 30h old: inside [now-48h, now-24h)
+    assert await h.fetch(at=NOW - timedelta(hours=12)) == "✅ Memes: +0 · 0 queued"
+    assert h.bot.messages == {}
+    assert await h.fetch(from_h=31, to_h=29) == "✅ Memes: +1 · 1 queued"
+    assert await h.fetch(from_h=24, to_h=24) == "❌ Memes: empty window"
 
 
-async def test_empty_digest_is_done_without_footer(h: Harness) -> None:
-    await h.service.run_folder(h.folders.folders[0])
+async def test_fetch_with_nothing_new_is_silent(h: Harness) -> None:
+    assert await h.fetch() == "✅ Memes: +0 · 0 queued"
+    assert h.bot.messages == {}
+    assert h.user.created  # the digest channel still gets created
+
+
+async def test_second_fetch_while_unread_posts_then_edits_note(h: Harness) -> None:
+    h.add_posts(5)
+    await h.fetch()
     target = h.target
-    assert h.bot.texts(target) == ["📂 Memes · 2026-10-14 · no posts in window"]
-    digest = await h.storage.get_digest(1)
-    assert digest is not None and digest.status == DigestStatus.DONE
+    h.add_posts(3, start=6)
+    assert await h.fetch() == "✅ Memes: +3 · 6 queued"
+    assert h.bot.messages[target][-1] == (5, "📥 +3 · 6 queued", h.fid)
+    assert h.bot.edits[-1] == (target, FOOTER, h.bot.messages[target][1][1], None)
+    assert len(h.user.forwarded) == 2  # batch unread: nothing sent
+    h.add_posts(2, start=9)
+    assert await h.fetch() == "✅ Memes: +2 · 8 queued"
+    assert len(h.bot.messages[target]) == 3  # no new message
+    assert h.bot.edits[-1] == (target, 5, "📥 +5 · 8 queued", h.fid)
+    folder = await h.reload()
+    assert (folder.fetch_msg_id, folder.fetch_added) == (5, 5)
+    assert (folder.button_msg_id, folder.button_text) == (5, "📥 +5 · 8 queued")
+
+
+async def test_note_edit_failure_posts_new_note(h: Harness) -> None:
+    h.add_posts(5)
+    await h.fetch()
+    target = h.target
+    h.add_posts(3, start=6)
+    await h.fetch()
+    h.bot.bad_edits.add(5)  # owner deleted the note
+    h.add_posts(2, start=9)
+    assert await h.fetch() == "✅ Memes: +2 · 8 queued"
+    assert h.bot.messages[target][-1] == (6, "📥 +5 · 8 queued", h.fid)
+    folder = await h.reload()
+    assert folder.fetch_msg_id == 6 and folder.button_msg_id == 6
+
+
+async def test_batch_clears_note_so_next_fetch_posts_new_one(h: Harness) -> None:
+    h.add_posts(5)
+    await h.fetch()
+    target = h.target
+    h.add_posts(1, start=6)
+    await h.fetch()  # note 5
+    h.clock.advance(120)
+    await h.user.emit_read(target, 3)  # first batch read: next batch goes out
+    assert h.user.forwarded[2:] == [(CH_ID, [3]), (CH_ID, [4])]
+    assert h.bot.edits[-1] == (target, 5, "📥 +1 · 4 queued", None)  # note lost its button
+    h.add_posts(1, start=7)
+    await h.fetch()
+    assert h.bot.messages[target][-1][1] == "📥 +1 · 3 queued"
+    assert h.bot.messages[target][-1][0] == 9  # note=5, posts=6,7, footer=8, new note=9
+
+
+async def test_batch_after_read_takes_best_of_whole_queue(h: Harness) -> None:
+    h.add_posts(5)
+    await h.fetch()
+    target = h.target
+    h.add_posts(1, start=6, top=300)  # reactions 294: best in the queue
+    await h.fetch()
+    h.clock.advance(120)
+    await h.user.emit_read(target, 3)
+    assert h.user.forwarded == [(CH_ID, [1]), (CH_ID, [2]), (CH_ID, [6]), (CH_ID, [3])]
+    assert h.bot.last(target)[1].splitlines()[-1] == "queued 2"
+
+
+async def test_fetch_mentions_skipped_channels(h: Harness) -> None:
+    h.add_posts(1)
+    h.user.folders["Memes"].append(-1002)
+    assert await h.fetch() == "✅ Memes: +1 · 1 queued · ⚠️ skipped: -1002: -1002"
+
+
+async def test_fetch_all_runs_every_folder(h: Harness) -> None:
+    h.add_posts(1)
+    await h.storage.create_folder("News", FolderConfig(), NOW)
+    h.user.folders["News"] = []
+    assert await h.service.fetch_all() == ["✅ Memes: +1 · 1 queued", "✅ News: +0 · 0 queued"]
+
+
+async def test_fetch_unknown_folder(h: Harness) -> None:
+    assert (await h.service.fetch(99)).startswith("❌ unknown folder")
+
+
+# ---- failures ------------------------------------------------------------------
+
+
+async def test_scheduled_failure_dms_once_until_error_changes(h: Harness) -> None:
+    del h.user.folders["Memes"]
+    first = await h.fetch(scheduled=True)
+    assert first.startswith("❌ Memes:")
+    assert await h.fetch(scheduled=True) == first
+    assert h.bot.owner_messages == [first]
+    folder = await h.reload()
+    assert folder.last_error == first.removeprefix("❌ Memes: ")
+    h.user.folders["Memes"] = [CH_ID]
+    await h.fetch(scheduled=True)
+    assert (await h.reload()).last_error is None
+    del h.user.folders["Memes"]
+    await h.fetch(scheduled=True)
+    assert h.bot.owner_messages == [first, first]
+
+
+async def test_manual_failure_replies_without_dm(h: Harness) -> None:
+    del h.user.folders["Memes"]
+    assert (await h.fetch()).startswith("❌ Memes:")
+    assert h.bot.owner_messages == []
+    assert (await h.reload()).last_error is None
+
+
+async def test_fetch_reports_unusable_target(h: Harness) -> None:
+    h.add_posts(2)
+    h.bot.bad_targets.add(-1009000000001)
+    result = await h.fetch(scheduled=True)
+    assert result.startswith("❌ Memes:")
+    assert h.bot.owner_messages == [result]
+
+
+async def test_session_dead_triggers_fatal_hook(h: Harness) -> None:
+    h.user.dead = True
+    result = await h.fetch()
+    assert result.startswith("💀 Memes:")
+    assert h.bot.owner_messages == [result]
+    assert len(h.fatal) == 1 and isinstance(h.fatal[0], SessionDead)
+
+
+async def test_item_failure_does_not_stop_batch(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h.add_posts(3)
+    original = h.deliverer.deliver
+
+    async def flaky(target: int, item: object, channel: object) -> object:
+        if getattr(item, "msg_id", None) == 1:
+            raise RuntimeError("boom")
+        return await original(target, item, channel)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(h.deliverer, "deliver", flaky)
+    await h.fetch()
+    assert await h.storage.count_items(h.fid, ItemState.FAILED) == 1
+    assert await h.storage.count_items(h.fid, ItemState.SENT) == 1
+    assert h.bot.last(h.target)[1].splitlines() == [
+        "#1 · 9.8% · 98👍 / 1.0k👁 · @a",
+        "queued 1",
+    ]
+
+
+# ---- read tracking ---------------------------------------------------------------
 
 
 async def test_on_read_below_marker_does_nothing(h: Harness) -> None:
     h.add_posts(5)
-    await h.service.run_folder(h.folders.folders[0])
+    await h.fetch()
     h.clock.advance(600)
     await h.user.emit_read(h.target, 2)
     assert len(h.user.forwarded) == 2
@@ -175,26 +356,25 @@ async def test_on_read_below_marker_does_nothing(h: Harness) -> None:
 
 async def test_on_read_at_marker_sends_next_batch(h: Harness) -> None:
     h.add_posts(5)
-    await h.service.run_folder(h.folders.folders[0])
+    await h.fetch()
     target = h.target
     h.clock.advance(120)
     await h.user.emit_read(target, 3)
     assert h.user.forwarded == [(CH_ID, [1]), (CH_ID, [2]), (CH_ID, [3]), (CH_ID, [4])]
-    assert h.bot.last(target)[1].splitlines()[-1] == "shown 4/5"
-    # previous footer lost its button
-    assert h.bot.edits == [(target, 4, h.bot.messages[target][1][1], None)]
+    assert h.bot.last(target)[1].splitlines()[-1] == "queued 1"
+    assert h.bot.edits[-1] == (target, FOOTER, h.bot.messages[target][1][1], None)
 
 
 async def test_on_read_sends_next_once_90_percent_of_batch_is_read(
     storage: Storage, tmp_path: Path
 ) -> None:
-    h = Harness(storage, tmp_path, batch_size=10)
+    h = await make(storage, tmp_path, batch_size=10)
     h.add_posts(12)
-    await h.service.run_folder(h.folders.folders[0])
+    await h.fetch()
     target = h.target
     assert len(h.user.forwarded) == 10
     h.clock.advance(120)
-    await h.user.emit_read(target, 9)  # title=1, posts=2..11: 8 of 10 read
+    await h.user.emit_read(target, 9)  # note=1, posts=2..11: 8 of 10 read
     assert len(h.user.forwarded) == 10
     await h.user.emit_read(target, 10)  # 9 of 10 read
     assert len(h.user.forwarded) == 12
@@ -202,7 +382,7 @@ async def test_on_read_sends_next_once_90_percent_of_batch_is_read(
 
 async def test_on_read_within_interval_defers_instead_of_dropping(h: Harness) -> None:
     h.add_posts(5)
-    await h.service.run_folder(h.folders.folders[0])
+    await h.fetch()
     target = h.target
     h.clock.advance(30)
     await h.user.emit_read(target, 3)
@@ -217,162 +397,107 @@ async def test_on_read_within_interval_defers_instead_of_dropping(h: Harness) ->
 
 async def test_on_read_ignores_unknown_channel(h: Harness) -> None:
     h.add_posts(5)
-    await h.service.run_folder(h.folders.folders[0])
+    await h.fetch()
     h.clock.advance(600)
     await h.user.emit_read(-100999, 10_000)
     assert len(h.user.forwarded) == 2
 
 
-async def test_stale_digest_ignored_after_new_run(h: Harness) -> None:
+async def test_concurrent_read_events_send_one_batch(h: Harness) -> None:
     h.add_posts(5)
-    await h.service.run_folder(h.folders.folders[0])
+    await h.fetch()
     target = h.target
-    h.clock.advance(24 * 3600)
-    await h.service.run_folder(h.folders.folders[0])
-    first = await h.storage.get_digest(1)
-    assert first is not None and first.status == DigestStatus.DONE
-    before = len(h.user.forwarded)
-    h.clock.advance(600)
-    await h.user.emit_read(target, 3)  # marker only past digest 1's batch
-    assert len(h.user.forwarded) == before
+    h.clock.advance(120)
+    await asyncio.gather(h.user.emit_read(target, 3), h.user.emit_read(target, 3))
+    assert len(h.user.forwarded) == 4
 
 
 async def test_next_button_bypasses_pacing(h: Harness) -> None:
     h.add_posts(5)
-    await h.service.run_folder(h.folders.folders[0])
-    await h.bot.press_next(1)
+    await h.fetch()
+    h.clock.advance(1)
+    await h.bot.press_next(h.fid)
     assert len(h.user.forwarded) == 4
 
 
-async def test_last_batch_marks_done(h: Harness) -> None:
+async def test_last_batch_leaves_no_button(h: Harness) -> None:
     h.add_posts(3)
-    await h.service.run_folder(h.folders.folders[0])
+    await h.fetch()
     target = h.target
-    await h.bot.press_next(1)
-    digest = await h.storage.get_digest(1)
-    assert digest is not None and digest.status == DigestStatus.DONE
+    h.clock.advance(1)
+    await h.bot.press_next(h.fid)
     _, footer, next_id = h.bot.last(target)
-    assert footer.splitlines()[-1] == "✅ all 3 shown"
+    assert footer.splitlines()[-1] == "✅ queue empty"
     assert next_id is None
-    await h.bot.press_next(1)  # done digest: nothing happens
+    folder = await h.reload()
+    assert folder.button_msg_id is None
+    await h.bot.press_next(h.fid)  # empty queue: nothing happens
     assert len(h.user.forwarded) == 3
 
 
-async def test_item_failure_does_not_stop_batch(
-    h: Harness, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    h.add_posts(3)
-    original = h.deliverer.deliver
-
-    async def flaky(target: int, item: object, channel: object) -> object:
-        if getattr(item, "rank", None) == 1:
-            raise RuntimeError("boom")
-        return await original(target, item, channel)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(h.deliverer, "deliver", flaky)
-    await h.service.run_folder(h.folders.folders[0])
-    assert await h.storage.count_items(1, ItemState.FAILED) == 1
-    assert await h.storage.count_items(1, ItemState.SENT) == 1
-    assert h.bot.last(h.target)[1].splitlines()[-1] == "shown 1/3"
+async def test_next_button_with_dead_target_reports(h: Harness) -> None:
+    h.add_posts(5)
+    await h.fetch()
+    h.bot.bad_targets.add(h.target)
+    await h.bot.press_next(h.fid)
+    assert h.bot.owner_messages[-1].startswith("❌ Memes: digest channel unusable")
 
 
-async def test_run_folder_reports_failure_to_owner(h: Harness) -> None:
-    del h.user.folders["Memes"]
-    result = await h.service.run_folder(h.folders.folders[0])
-    assert result.startswith("❌ Memes:")
-    assert h.bot.owner_messages == [result]
-
-
-async def test_run_folder_marks_failed_when_target_unusable(h: Harness) -> None:
-    h.add_posts(2)
-    h.bot.bad_targets.add(-1009000000001)
-    result = await h.service.run_folder(h.folders.folders[0])
-    assert result.startswith("❌ Memes:")
-    digest = await h.storage.get_digest(1)
-    assert digest is not None and digest.status == DigestStatus.FAILED
-
-
-async def test_run_folder_mentions_skipped_channels(h: Harness) -> None:
-    h.add_posts(1)
-    h.user.folders["Memes"].append(-1002)
-    result = await h.service.run_folder(h.folders.folders[0])
-    assert result == "✅ Memes: 1 posts · ⚠️ skipped: -1002: -1002"
-
-
-async def test_run_all_runs_every_folder(h: Harness) -> None:
-    h.add_posts(1)
-    assert await h.service.run_all() == ["✅ Memes: 1 posts"]
+async def test_prune_before_batch_drops_aged_posts(storage: Storage, tmp_path: Path) -> None:
+    h = await make(storage, tmp_path, min_age_h=0, period_h=12, max_age_d=1)
+    h.add_posts(3, age_h=1)
+    await h.fetch()
+    assert len(h.user.forwarded) == 2
+    h.clock.advance(25 * 3600)
+    await h.bot.press_next(h.fid)
+    assert len(h.user.forwarded) == 2
+    assert await h.storage.count_pending(h.fid) == 0
 
 
 async def test_catch_up_sends_next_when_marker_already_past(h: Harness) -> None:
     h.add_posts(5)
-    await h.service.run_folder(h.folders.folders[0])
+    await h.fetch()
     h.user.read_markers[h.target] = 3
     h.clock.advance(600)
     await h.service.catch_up()
     assert len(h.user.forwarded) == 4
 
 
-async def test_send_batch_without_folder_config_is_noop(h: Harness) -> None:
+async def test_catch_up_sends_first_batch_for_never_sent_folder(h: Harness) -> None:
+    await h.storage.set_target("Memes", -100500, NOW)
+    await h.storage.enqueue(h.fid, [scored(1, 50), scored(2, 40), scored(3, 30)], NOW)
+    await h.service.catch_up()
+    assert h.user.forwarded == [(CH_ID, [1]), (CH_ID, [2])]
+    assert h.bot.last(-100500)[1].splitlines()[-1] == "queued 1"
+
+
+async def test_catch_up_skips_folders_without_channel(h: Harness) -> None:
+    await h.service.catch_up()
+    assert h.user.forwarded == [] and h.bot.owner_messages == []
+
+
+async def test_catch_up_survives_marker_failure(h: Harness) -> None:
     h.add_posts(5)
-    await h.service.run_folder(h.folders.folders[0])
-    h.folders = FoldersConfig(folders=[FolderConfig(name="Other")])
-    assert await h.service.send_batch(1) == 0
-    assert len(h.user.forwarded) == 2
+    await h.fetch()
+    h.user.marker_fails.add(h.target)
+    await h.service.catch_up()  # must not raise
+    assert h.bot.owner_messages and "channel gone" in h.bot.owner_messages[-1]
+
+
+async def test_rescore_updates_pending_from_cached_channel(h: Harness) -> None:
+    h.add_posts(5)
+    await h.fetch()
+    assert [i.score for i in await h.storage.pending_items(h.fid)] == [0.097, 0.096, 0.095]
+    await h.storage.update_folder_config(h.fid, FolderConfig(batch_size=2, scoring="raw"))
+    assert await h.service.rescore(h.fid) == 3
+    assert [i.score for i in await h.storage.pending_items(h.fid)] == [97.0, 96.0, 95.0]
+    cfg = FolderConfig(batch_size=2, scoring="per_subscriber", min_denominator=50)
+    await h.storage.update_folder_config(h.fid, cfg)
+    await h.service.rescore(h.fid)
+    scores = [i.score for i in await h.storage.pending_items(h.fid)]
+    assert scores == pytest.approx([970.0, 960.0, 950.0])
 
 
 async def test_bind_wires_both_gateways(h: Harness) -> None:
     assert h.user._read_handler is not None
     assert h.bot._next_handler is not None
-
-
-async def test_concurrent_read_events_send_one_batch(h: Harness) -> None:
-    h.add_posts(5)
-    await h.service.run_folder(h.folders.folders[0])
-    target = h.target
-    h.clock.advance(120)
-    await asyncio.gather(h.user.emit_read(target, 3), h.user.emit_read(target, 3))
-    assert len(h.user.forwarded) == 4  # one extra batch, not two
-
-
-async def test_next_button_with_dead_target_marks_failed(h: Harness) -> None:
-    h.add_posts(5)
-    await h.service.run_folder(h.folders.folders[0])
-    h.bot.bad_targets.add(h.target)
-    await h.bot.press_next(1)
-    digest = await h.storage.get_digest(1)
-    assert digest is not None and digest.status == DigestStatus.FAILED
-    assert h.bot.owner_messages and h.bot.owner_messages[-1].startswith("❌ digest 1")
-
-
-async def test_catch_up_survives_marker_failure(h: Harness) -> None:
-    h.add_posts(5)
-    await h.service.run_folder(h.folders.folders[0])
-    h.user.marker_fails.add(h.target)
-    await h.service.catch_up()  # must not raise
-    digest = await h.storage.get_digest(1)
-    assert digest is not None and digest.status == DigestStatus.FAILED
-    assert h.bot.owner_messages and "channel gone" in h.bot.owner_messages[-1]
-
-
-async def test_unexpected_error_after_create_marks_failed(
-    h: Harness, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    h.add_posts(2)
-
-    async def broken_send_text(*args: object, **kwargs: object) -> int:
-        raise RuntimeError("sqlite is on fire")
-
-    monkeypatch.setattr(h.bot, "send_text", broken_send_text)
-    result = await h.service.run_folder(h.folders.folders[0])
-    assert result.startswith("❌ Memes:")
-    digest = await h.storage.get_digest(1)
-    assert digest is not None and digest.status == DigestStatus.FAILED
-
-
-async def test_session_dead_triggers_fatal_hook(h: Harness) -> None:
-    h.user.dead = True
-    result = await h.service.run_folder(h.folders.folders[0])
-    assert result.startswith("💀 Memes:")
-    assert h.bot.owner_messages == [result]
-    assert len(h.fatal) == 1 and isinstance(h.fatal[0], SessionDead)

@@ -67,12 +67,6 @@ class ScoredPost:
     score: float
 
 
-class DigestStatus(StrEnum):
-    OPEN = "open"
-    DONE = "done"
-    FAILED = "failed"
-
-
 class ItemState(StrEnum):
     PENDING = "pending"
     SENT = "sent"
@@ -83,39 +77,6 @@ class Delivery(StrEnum):
     FORWARD = "forward"
     COPY = "copy"
     LINK = "link"
-
-
-@dataclass
-class Digest:
-    id: int
-    folder: str
-    target: int
-    window_start: datetime
-    window_end: datetime
-    total: int
-    status: DigestStatus
-    created_at: datetime
-    title_msg_id: int | None = None
-    footer_msg_id: int | None = None
-    footer_text: str | None = None
-    last_batch_at: datetime | None = None
-
-
-@dataclass
-class DigestItem:
-    digest_id: int
-    rank: int
-    channel_id: int
-    msg_ids: tuple[int, ...]
-    engagement: int
-    views: int
-    score: float
-    noforwards: bool
-    preview: str
-    state: ItemState = ItemState.PENDING
-    delivery: Delivery | None = None
-    sent_msg_id: int | None = None
-    sent_at: datetime | None = None
 
 
 class FolderConfig(BaseModel):
