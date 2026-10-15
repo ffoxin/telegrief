@@ -42,6 +42,21 @@ Success criteria:
 | Scheduler | In-process 60 s ticker; apscheduler and PyYAML dropped. |
 | Migration | Old digests are dropped, queue starts empty; `targets` (folder name → digest channel) is kept, so a folder re-added under the same exact name reuses its channel. |
 
+Settled in the grilling round:
+
+| Question | Decision |
+|----------|----------|
+| Window reference time | Scheduled fetches compute the window from the slot time (`next_run_at`), so consecutive slots tile exactly even when the ticker fires late. `/run` uses `now`. |
+| Overdue folder (restart after downtime) | Fetch only the latest slot `<= now`; older missed slots are skipped. Downtime is not an expected case. |
+| `next_run_at` on failure | Advances anyway; a broken folder is retried next period, not every minute. |
+| Fetch note lifecycle | Edited by later fetches until a batch is sent. If the edit fails (note deleted), a new note is posted. |
+| Next button | Exactly one, on the last bot message. Notes and footers both carry it; posting either removes it from the previous holder. Folder stores `button_msg_id` + `button_text`. |
+| `scoring` / `min_denominator` change | Pending rows are re-scored from stored engagement/views and cached channel subscribers. |
+| `/folder X off` | Keeps the digest channel, its `targets` row and its pin in the Telegram folder. |
+| Failure notifications | Scheduled fetch failure DMs the owner only when the error text differs from `last_error` (reset on success); `/status` shows `last_error`. Manual `/run` replies in chat, no DM. |
+| Digest channel uniqueness | `target=` must not point at a channel already mapped to another folder. |
+| Concurrency | Due folders are fetched one at a time. |
+
 ## 3. Data model
 
 Migration `002_queue.sql`:
@@ -60,10 +75,11 @@ CREATE TABLE folders (
     next_run_at TEXT NOT NULL,
     last_fetch_at TEXT,
     last_batch_at TEXT,
+    last_error TEXT,                    -- last scheduled-fetch error, NULL after a success
     fetch_msg_id INTEGER,               -- live fetch note, NULL once a batch was sent
     fetch_added INTEGER NOT NULL DEFAULT 0,  -- posts added since the last batch
-    footer_msg_id INTEGER,
-    footer_text TEXT,
+    button_msg_id INTEGER,              -- message currently holding the Next button
+    button_text TEXT,                   -- its text, to re-send it without the button
     created_at TEXT NOT NULL
 );
 
@@ -99,15 +115,19 @@ Validation (pydantic `FolderConfig`, applied to every create/update):
 `min_age_h >= 0`, `period_h >= 1`, `batch_size >= 1`, `min_denominator >= 1`,
 `max_items >= 1`, `max_age_d >= 1`, `scoring` in the strategy set, and
 `max_age_d * 24 > min_age_h + period_h` (otherwise every post would be pruned
-the moment it is queued).
+the moment it is queued). A `target=` channel already mapped to another
+folder is rejected.
 
 ## 4. Fetch
 
 Runs under a per-folder `asyncio.Lock`, triggered by the ticker (due folder)
 or by `/run`.
 
-1. **Window.** `start = now − (min_age_h + period_h)`, `end = now − min_age_h`,
-   half-open `[start, end)`. `/run <folder> <from_h> <to_h>` overrides both.
+1. **Window.** Reference time `t` is the slot time `next_run_at` for a
+   scheduled fetch and `now` for `/run`. `start = t − (min_age_h + period_h)`,
+   `end = t − min_age_h`, half-open `[start, end)`. Slots tile exactly, so a
+   late ticker never leaves a gap. `/run <folder> <from_h> <to_h>` overrides
+   both bounds (relative to `now`).
 2. **Collect and score.** As today: folder → channels (minus digest targets)
    → posts → albums → `rank()` (drop zero engagement, sort). `rank()` no
    longer truncates; the cap is applied to the queue.
@@ -121,16 +141,22 @@ or by `/run`.
    schedule, so they are not needed for dedupe). Then keep only the top
    `max_items` pending rows ordered by `(score desc, engagement desc,
    date asc)` and delete the rest.
-5. **Fetch note.** `fetch_added += added`. If `fetch_msg_id` is set, edit that
-   message to `📥 +{fetch_added} · {pending} queued`. Otherwise, if
-   `added > 0`, send the note and store its id. Silent, HTML, no preview.
-   `last_fetch_at = now`.
+5. **Fetch note.** `fetch_added += added`. Text `📥 +{fetch_added} ·
+   {pending} queued`, carrying the `Next {batch_size}` button when
+   pending > 0. If `fetch_msg_id` is set, edit that message (text and button);
+   if the edit fails, log a warning and fall through to sending a new one.
+   Otherwise, if `added > 0`, send the note and store its id. Sending a note
+   moves the button: the previous holder (`button_msg_id`) is edited to drop
+   it, and the note becomes the holder. Silent, HTML, no preview.
+   `last_fetch_at = now`, `last_error = NULL`.
 6. **Kick.** Run the read-marker check for this folder (§5): if no batch has
    ever been sent and the queue is not empty, send one; otherwise behave as
    if a read update had arrived (send the next batch when the last one is
    read enough, paced as usual).
-7. **Errors.** Collection failure → owner DM `❌ <folder>: <error>`, folder
-   state untouched. `SessionDead` → owner DM, fatal as today. Channel-level
+7. **Errors.** Collection failure on a scheduled fetch: set `last_error` to
+   the error text and DM the owner `❌ <folder>: <error>` only if it differs
+   from the previous `last_error`. On `/run` the error is the chat reply and
+   no DM is sent. `SessionDead` → owner DM, fatal as today. Channel-level
    errors are skipped and listed in the `/run` reply as today.
 
 Because every post is scored at an age of about `min_age_h`, scores from
@@ -139,9 +165,12 @@ meaningful.
 
 ### Schedule
 
-A ticker task wakes every 60 s. For every folder with `next_run_at <= now`
-it runs the fetch and then advances `next_run_at` by `period_h` until it is
-in the future (missed slots are skipped, not replayed). `/run` never changes
+A ticker task wakes every 60 s. For every folder with `next_run_at <= now`,
+one folder at a time: advance `next_run_at` by `period_h` until only one
+more step would put it past `now` (that slot is the latest complete one),
+fetch with that slot as reference time, then advance once more into the
+future. Older missed slots are skipped, not replayed, and the advance
+happens whether or not the fetch succeeded. `/run` never changes
 `next_run_at`. A new folder gets `next_run_at = now`, so its first fetch
 happens within a minute. On restart the ticker runs immediately, so an
 overdue folder fetches at once.
@@ -161,8 +190,9 @@ overdue folder fetches at once.
 5. Footer: one line per delivered item, `#n · score · engagement/views ·
    channel` where `n` is the position inside the batch, then `queued {pending}`
    or `✅ queue empty`. Button `Next {batch_size}` with callback
-   `next:<folder_id>` only when pending > 0. The previous footer is edited to
-   drop its button as today. `last_batch_at = now`.
+   `next:<folder_id>` only when pending > 0. The current button holder
+   (previous footer or fetch note) is edited to drop its button; the footer
+   becomes the holder. `last_batch_at = now`.
 
 Nothing is sent when the queue is empty.
 
@@ -196,7 +226,10 @@ and a non-empty queue gets a batch.
   | `next` | `HH:MM` in `TZ` (next occurrence) or `now`; re-anchors the schedule |
 
   Unknown key or invalid value → error, nothing changed. Changing `period`
-  keeps `next_run_at` unless `next=` is given. `/folder <name>` without
+  keeps `next_run_at` unless `next=` is given. Changing `scoring` or
+  `min_denominator` re-scores every pending row from its stored engagement
+  and views plus the cached channel subscribers (a channel missing from the
+  cache scores with `min_denominator` as the denominator). `/folder <name>` without
   pairs creates the folder with defaults when it does not exist, and shows
   its config when it does. Reply examples:
 
@@ -214,8 +247,8 @@ and a non-empty queue gets a batch.
   Starts with the Telegram folder titles the account sees.
 - `/run [folder] [from_h] [to_h]` — fetch now; the window defaults to the
   folder's own `min_age`/`period`.
-- `/status` — per folder: last fetch time, pending, sent, last batch time,
-  next run. Times in `TZ`.
+- `/status` — per folder: last fetch time and `+added`, pending, last batch
+  time, next run, and `⚠️ last_error` when set. Times in `TZ`.
 - `/reset <folder>` — unchanged.
 - anything else — usage.
 
@@ -247,9 +280,9 @@ folder. The `/status` and `/folders` commands show the result.
 |--------|--------|
 | `models.py` | `FolderConfig` (pydantic, tuning fields, validation), `Folder` (id, name, config, runtime fields), `QueueItem`; drop `Digest`, `DigestItem`, `DigestStatus`. |
 | `config.py` | `Settings` without the removed fields; keep `strip_symbols` / `normalize_title`; drop yaml loading and `FoldersConfig`. |
-| `storage.py` | folders: `create_folder`, `update_folder`, `delete_folder`, `get_folder` (by id / loose name), `list_folders`, `due_folders(now)`, `folder_for_target`; queue: `enqueue(folder_id, scored, now) -> added`, `prune(folder_id, now, cfg)`, `pending_items(folder_id, limit)`, `count_pending`, `batch_items(folder_id, sent_at)`, `update_item`. Digest methods removed. |
-| `digest.py` | `DigestService.fetch(folder, start, end)`, `send_batch(folder_id, manual)`, `on_read`, `on_next_button`, `catch_up`, `kick(folder)`. |
-| `scheduler.py` | `Ticker` replaces apscheduler; `serve` starts it; `run_once` unchanged in shape. |
+| `storage.py` | folders: `create_folder`, `update_folder`, `delete_folder`, `get_folder` (by id / loose name), `list_folders`, `due_folders(now)`, `folder_for_target`; queue: `enqueue(folder_id, scored, now) -> added`, `prune(folder_id, now, cfg)`, `rescore(folder_id, cfg, channels)`, `pending_items(folder_id, limit)`, `count_pending`, `batch_items(folder_id, sent_at)`, `update_item`. Digest methods removed. |
+| `digest.py` | `DigestService.fetch(folder, start, end, scheduled)`, `send_batch(folder_id, manual)`, `on_read`, `on_next_button`, `catch_up`, `kick(folder)`, `_move_button(folder, msg_id, text)`. |
+| `scheduler.py` | `Ticker` replaces apscheduler (`latest_slot` helper); `serve` starts it; `run_once` unchanged in shape. |
 | `commands.py` | `/folder` parser (`parse_folder_args`), `/folders`, `/status`, `/run`, `/reset`. |
 | `delivery.py` | `render_footer(batch, channels, cfg, pending)`, `render_fetch_note(added, pending)`; `render_title` removed. |
 | `migrations/002_queue.sql` | as in §3. |
@@ -265,15 +298,19 @@ Unit tests with the existing in-memory fakes and a temporary SQLite file:
   by score; `due_folders`; `folder_for_target`.
 - `models`: `FolderConfig` validation including the `max_age` vs
   `min_age + period` rule.
-- `digest`: fetch enqueues and posts a note; second fetch with no batch in
-  between edits the note; a batch clears the note state so the next fetch
-  posts a new one; fetch with an idle channel sends a batch; fetch with an
-  unread batch only enqueues; a later batch delivers the best of the whole
-  queue; `on_read` and pacing unchanged; catch-up sends the first batch for a
-  never-sent folder.
-- `scheduler`: ticker runs due folders, advances `next_run_at` past `now`,
-  skips folders not yet due, keeps going when one folder fails.
+- `digest`: fetch enqueues and posts a note with the button, previous footer
+  loses its button; second fetch with no batch in between edits the note; a
+  failed edit falls back to a new note; a batch clears the note state so the
+  next fetch posts a new one; fetch with an idle channel sends a batch;
+  fetch with an unread batch only enqueues; a later batch delivers the best
+  of the whole queue; `on_read` and pacing unchanged; catch-up sends the
+  first batch for a never-sent folder; scheduled failure DMs once per
+  distinct error and clears on success; manual `/run` failure does not DM.
+- `scheduler`: ticker runs due folders one at a time, fetches with the latest
+  slot `<= now` as reference time, advances `next_run_at` past `now` even
+  on failure, skips folders not yet due, keeps going when one folder fails.
 - `commands`: `/folder` parsing (name with spaces, pairs, `off`, reserved
-  name, unknown key, bad value), reply texts; `/run` default window from the
-  folder; `/status`, `/folders` lines.
+  name, unknown key, bad value, duplicate `target`), reply texts; scoring
+  change re-scores pending rows; `/run` default window from the folder;
+  `/status` with `last_error`, `/folders` lines.
 - `delivery`: footer with and without button, fetch note text.
