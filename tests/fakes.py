@@ -164,9 +164,10 @@ class FakeUser:
 class FakeBot:
     def __init__(self) -> None:
         self.username = "telegrief_bot"
-        # target -> [(msg_id, text, next_digest_id)]
+        # target -> [(msg_id, text, next_id)]
         self.messages: dict[int, list[tuple[int, str, int | None]]] = {}
         self.edits: list[tuple[int, int, str, int | None]] = []
+        self.bad_edits: set[int] = set()  # edit_text on these msg ids raises GatewayError
         self.forwards: list[tuple[int, list[int]]] = []
         self.resent: list[tuple[int, list[int]]] = []
         self.deleted: list[list[int]] = []
@@ -222,13 +223,13 @@ class FakeBot:
         target: int,
         text: str,
         *,
-        next_digest_id: int | None = None,
+        next_id: int | None = None,
         next_label: str = "Next",
         preview: bool = False,
     ) -> int:
         self._check(target)
         (msg_id,) = self._ids(target, 1)
-        self.messages.setdefault(target, []).append((msg_id, text, next_digest_id))
+        self.messages.setdefault(target, []).append((msg_id, text, next_id))
         return msg_id
 
     async def edit_text(
@@ -237,10 +238,13 @@ class FakeBot:
         msg_id: int,
         text: str,
         *,
-        next_digest_id: int | None = None,
+        next_id: int | None = None,
         next_label: str = "Next",
     ) -> None:
-        self.edits.append((target, msg_id, text, next_digest_id))
+        self._check(target)
+        if msg_id in self.bad_edits:
+            raise GatewayError("MESSAGE_ID_INVALID")
+        self.edits.append((target, msg_id, text, next_id))
 
     async def send_owner(self, text: str) -> None:
         self.owner_messages.append(text)
@@ -251,9 +255,9 @@ class FakeBot:
     def on_owner_command(self, handler: CommandHandlerFn) -> None:
         self._command_handler = handler
 
-    async def press_next(self, digest_id: int) -> None:
+    async def press_next(self, folder_id: int) -> None:
         assert self._next_handler is not None, "on_next_button not bound"
-        await self._next_handler(digest_id)
+        await self._next_handler(folder_id)
 
     async def command(self, cmd: str, args: list[str]) -> str:
         assert self._command_handler is not None, "on_owner_command not bound"

@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from telethon.errors import MessageIdInvalidError
 from telethon.tl import types
 
 from telegrief.tg.bot import (
@@ -11,7 +12,7 @@ from telegrief.tg.bot import (
     parse_command,
     relay_media,
 )
-from telegrief.tg.protocols import PING_TEXT, RelayTimeout
+from telegrief.tg.protocols import PING_TEXT, GatewayError, RelayTimeout, TargetUnavailable
 
 
 def test_parse_callback() -> None:
@@ -198,3 +199,17 @@ async def test_next_button_ignores_non_owner() -> None:
     owner = _FakeEvent(b"next:5", sender_id=1)
     await callback(owner)  # type: ignore[operator]
     assert pressed == [5]
+
+
+async def test_edit_text_wraps_other_rpc_errors() -> None:
+    class Client:
+        def add_event_handler(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def edit_message(self, *args: object, **kwargs: object) -> None:
+            raise MessageIdInvalidError(request=None)
+
+    bot = TelethonBot(Client(), "bot", owner_id=1)  # type: ignore[arg-type]
+    with pytest.raises(GatewayError) as info:
+        await bot.edit_text(-100, 5, "x")
+    assert not isinstance(info.value, TargetUnavailable)

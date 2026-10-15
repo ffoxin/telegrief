@@ -23,6 +23,7 @@ from .protocols import (
     PING_TEXT,
     CommandHandlerFn,
     ForwardRestricted,
+    GatewayError,
     NextHandler,
     RelayTimeout,
     TargetUnavailable,
@@ -190,7 +191,7 @@ class TelethonBot:
         target: int,
         text: str,
         *,
-        next_digest_id: int | None = None,
+        next_id: int | None = None,
         next_label: str = "Next",
         preview: bool = False,
     ) -> int:
@@ -201,7 +202,7 @@ class TelethonBot:
                 parse_mode="html",
                 link_preview=preview,
                 silent=True,
-                buttons=next_button(next_digest_id, next_label),
+                buttons=next_button(next_id, next_label),
             )
         except _TARGET_ERRORS as exc:
             raise TargetUnavailable(f"{target}: {exc}") from exc
@@ -213,7 +214,7 @@ class TelethonBot:
         msg_id: int,
         text: str,
         *,
-        next_digest_id: int | None = None,
+        next_id: int | None = None,
         next_label: str = "Next",
     ) -> None:
         try:
@@ -223,12 +224,14 @@ class TelethonBot:
                 text,
                 parse_mode="html",
                 link_preview=False,
-                buttons=next_button(next_digest_id, next_label),
+                buttons=next_button(next_id, next_label),
             )
         except MessageNotModifiedError:
             return
         except _TARGET_ERRORS as exc:
             raise TargetUnavailable(f"{target}: {exc}") from exc
+        except RPCError as exc:
+            raise GatewayError(f"{target}/{msg_id}: {exc}") from exc
 
     async def send_owner(self, text: str) -> None:
         try:

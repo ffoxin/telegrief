@@ -110,7 +110,7 @@ class BotGateway(Protocol):
         target: int,
         text: str,
         *,
-        next_digest_id: int | None = None,
+        next_id: int | None = None,
         next_label: str = "Next",
         preview: bool = False,
     ) -> int: ...
@@ -121,7 +121,7 @@ class BotGateway(Protocol):
         msg_id: int,
         text: str,
         *,
-        next_digest_id: int | None = None,
+        next_id: int | None = None,
         next_label: str = "Next",
     ) -> None: ...
 
