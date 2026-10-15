@@ -231,6 +231,26 @@ async def test_folder_target_rejects_channel_of_other_folder(h: Harness) -> None
     assert await h.bot.command("folder", ["Memes", "target=-100777"]) == "✅ Memes: target -100777"
 
 
+async def test_folder_target_replacing_auto_channel_unpins_it(h: Harness) -> None:
+    await h.bot.command("run", ["Memes"])  # creates and pins the digest channel
+    old = await h.storage.get_target("Memes")
+    assert old is not None and old in h.user.folders["Memes"]
+    reply = await h.bot.command("folder", ["Memes", "target=-100777"])
+    assert reply == "✅ Memes: target -100777 (old digest channel removed from the folder)"
+    assert await h.storage.get_target("Memes") == -100777
+    assert h.user.folder_unpins == [("Memes", old)]
+    assert old not in h.user.folders["Memes"]
+
+
+async def test_folder_target_rejects_channel_mapped_to_removed_folder(h: Harness) -> None:
+    await h.bot.command("folder", ["Memes", "target=-100777"])
+    await h.bot.command("folder", ["Memes", "off"])
+    assert await h.bot.command("folder", ["My", "News", "target=-100777"]) == (
+        "❌ channel -100777 is already the digest channel of Memes"
+    )
+    assert await h.storage.get_target("My News") is None
+
+
 async def test_folder_next_reanchors_schedule(h: Harness) -> None:
     reply = await h.bot.command("folder", ["Memes", "next=03:00"])
     assert reply == "✅ Memes: next 2026-10-15 03:00"

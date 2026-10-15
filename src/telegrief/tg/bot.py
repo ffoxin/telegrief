@@ -31,7 +31,8 @@ from .protocols import (
 
 FLOOD_SLEEP_THRESHOLD = 120
 REPLY_LIMIT = 4000
-_CALLBACK = re.compile(rb"^next:(\d+)$")
+# Prefix differs from the pre-queue "next:<digest_id>" so stale buttons stay inert.
+_CALLBACK = re.compile(rb"^queue:(\d+)$")
 _COMMAND = re.compile(r"^/([a-zA-Z_]+)(?:@\w+)?(?:\s+(.*))?$", re.DOTALL)
 _TARGET_ERRORS = (ChannelPrivateError, ChatAdminRequiredError, ChatWriteForbiddenError, ValueError)
 
@@ -67,10 +68,10 @@ async def dispatch_owner_message(event: Any, handler: CommandHandlerFn) -> None:
     await event.respond((reply or "ok")[:REPLY_LIMIT])
 
 
-def next_button(digest_id: int | None, label: str) -> Any:
-    if digest_id is None:
+def next_button(folder_id: int | None, label: str) -> Any:
+    if folder_id is None:
         return None
-    return Button.inline(label, data=f"next:{digest_id}".encode())
+    return Button.inline(label, data=f"queue:{folder_id}".encode())
 
 
 def _ids(messages: Any) -> list[int]:
@@ -246,12 +247,12 @@ class TelethonBot:
             if event.sender_id != self._owner_id:
                 await event.answer("not for you")
                 return
-            digest_id = parse_callback(event.data)
+            folder_id = parse_callback(event.data)
             await event.answer()
-            if digest_id is not None:
-                await handler(digest_id)
+            if folder_id is not None:
+                await handler(folder_id)
 
-        self._client.add_event_handler(_on_callback, events.CallbackQuery(pattern=rb"^next:\d+$"))
+        self._client.add_event_handler(_on_callback, events.CallbackQuery(pattern=rb"^queue:\d+$"))
 
     def on_owner_command(self, handler: CommandHandlerFn) -> None:
         async def _on_message(event: Any) -> None:

@@ -232,6 +232,13 @@ class Storage:
         rows = await self._fetchall("SELECT channel_id FROM targets")
         return [int(r["channel_id"]) for r in rows]
 
+    async def target_owner(self, channel_id: int) -> str | None:
+        """Name under which ``channel_id`` is mapped, whether or not that folder still exists."""
+        row = await self._fetchone(
+            "SELECT folder FROM targets WHERE channel_id = ? ORDER BY folder LIMIT 1", (channel_id,)
+        )
+        return str(row["folder"]) if row is not None else None
+
     async def delete_target(self, folder: str) -> bool:
         cur = await self._conn.execute("DELETE FROM targets WHERE folder = ?", (folder,))
         await self._conn.commit()
@@ -344,7 +351,7 @@ class Storage:
         row = await self._fetchone(
             """
             SELECT f.* FROM folders f JOIN targets t ON t.folder = f.name
-            WHERE t.channel_id = ?
+            WHERE t.channel_id = ? ORDER BY f.id LIMIT 1
             """,
             (channel_id,),
         )

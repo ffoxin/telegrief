@@ -16,10 +16,16 @@ from telegrief.tg.protocols import PING_TEXT, GatewayError, RelayTimeout, Target
 
 
 def test_parse_callback() -> None:
-    assert parse_callback(b"next:12") == 12
-    assert parse_callback(b"next:") is None
+    assert parse_callback(b"queue:12") == 12
+    assert parse_callback(b"queue:") is None
     assert parse_callback(b"other:1") is None
     assert parse_callback(None) is None
+
+
+def test_parse_callback_ignores_pre_queue_digest_buttons() -> None:
+    # Footers posted before migration 002 carry next:<digest_id>; those ids are not folder ids.
+    assert parse_callback(b"next:12") is None
+    assert next_button(5, "Next 10").type.data == b"queue:5"
 
 
 def test_parse_command() -> None:
@@ -80,7 +86,7 @@ def test_next_button() -> None:
     assert next_button(None, "Next 10") is None
     button = next_button(5, "Next 10")
     assert button is not None
-    assert button.type.data == b"next:5"
+    assert button.type.data == b"queue:5"
     assert button.text == "Next 10"
 
 
@@ -188,15 +194,15 @@ async def test_next_button_ignores_non_owner() -> None:
     bot = TelethonBot(client, "telegrief_bot", owner_id=1)  # type: ignore[arg-type]
     pressed: list[int] = []
 
-    async def handler(digest_id: int) -> None:
-        pressed.append(digest_id)
+    async def handler(folder_id: int) -> None:
+        pressed.append(folder_id)
 
     bot.on_next_button(handler)
     callback = client.handlers[-1]
-    stranger = _FakeEvent(b"next:5", sender_id=999)
+    stranger = _FakeEvent(b"queue:5", sender_id=999)
     await callback(stranger)  # type: ignore[operator]
     assert pressed == []
-    owner = _FakeEvent(b"next:5", sender_id=1)
+    owner = _FakeEvent(b"queue:5", sender_id=1)
     await callback(owner)  # type: ignore[operator]
     assert pressed == [5]
 

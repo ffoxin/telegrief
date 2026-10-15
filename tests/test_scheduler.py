@@ -132,3 +132,13 @@ async def test_tick_runs_every_due_folder_in_schedule_order(h: Harness) -> None:
     h.user.folders["News"] = []
     assert await h.ticker.tick() == ["✅ News: +0 · 0 queued", "✅ Memes: +0 · 0 queued"]
     assert await h.ticker.tick() == []
+
+
+async def test_tick_keeps_going_after_one_folder_fails(h: Harness) -> None:
+    await h.storage.create_folder("Broken", FolderConfig(), NOW)
+    await h.storage.create_folder("Memes", FolderConfig(), NOW)
+    h.post(1, age=30 * H)
+    results = await h.ticker.tick()
+    assert results[0].startswith("❌ Broken:")
+    assert results[1] == "✅ Memes: +1 · 1 queued"
+    assert [f.next_run_at for f in await h.storage.list_folders()] == [NOW + 24 * H] * 2

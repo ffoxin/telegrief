@@ -110,15 +110,19 @@ the digest of the image it just published; `deploy.sh` pins that digest in
 `.env` (`TELEGRIEF_IMAGE=…@sha256:…`), pulls it and restarts the service.
 Nothing is ever deployed by tag.
 
-Upgrading from the `folders.yaml` era: remove the `./config` mount and the
+Upgrading from the `folders.yaml` era: copy `.data/telegrief.db` aside first
+(migration 002 drops the old digest tables, so rolling the image back across
+this release means restoring that copy), remove the `./config` mount and the
 `RUN_AT` variable from the server's `docker-compose.yml`, deploy, then
 register each folder once with `/folder <name> min_age=… period=…` (the
-existing digest channels are reused when the name matches exactly). Roll back with `./deploy.sh sha256:<digest>`
-on the server, or re-run an earlier workflow's `deploy` job. The server has **no
-git checkout**: it owns `docker-compose.yml`, `deploy.sh`, `.env`,
-`secrets/` and `.data/`, so a push to `main` can change only what runs inside
-the container, never how it runs on the host. When the repo's reference copies
-of `docker-compose.yml` or `deploy.sh` change, update the server by hand.
+existing digest channels are reused when the name matches exactly).
+
+Roll back with `./deploy.sh sha256:<digest>` on the server, or re-run an
+earlier workflow's `deploy` job. The server has **no git checkout**: it owns
+`docker-compose.yml`, `deploy.sh`, `.env`, `secrets/` and `.data/`, so a push
+to `main` can change only what runs inside the container, never how it runs
+on the host. When the repo's reference copies of `docker-compose.yml` or
+`deploy.sh` change, update the server by hand.
 
 The container runs as `PUID:PGID` with a read-only root filesystem, all
 capabilities dropped and `no-new-privileges`; only `./.data` is writable.

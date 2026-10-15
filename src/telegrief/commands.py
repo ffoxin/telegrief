@@ -191,9 +191,9 @@ class CommandHandler:
         except ValueError as exc:
             return f"❌ {exc}"
         if target is not None:
-            owner = await self._storage.folder_for_target(target)
-            if owner is not None and (folder is None or owner.id != folder.id):
-                return f"❌ channel {target} is already the digest channel of {owner.name}"
+            owner = await self._storage.target_owner(target)
+            if owner is not None and owner != (folder.name if folder is not None else name):
+                return f"❌ channel {target} is already the digest channel of {owner}"
         if folder is None:
             return await self._create(name, cfg, target, next_run, now)
         if not pairs:
@@ -205,8 +205,7 @@ class CommandHandler:
                 folder.config.min_denominator,
             ):
                 await self._service.rescore(folder.id)
-        if target is not None:
-            await self._storage.set_target(folder.name, target, now)
+        note = await self._set_target(folder.name, target, now) if target is not None else ""
         if next_run is not None:
             await self._storage.set_next_run(folder.id, next_run)
         changes = [
@@ -214,7 +213,23 @@ class CommandHandler:
             f"{UNITS.get(key, '')}"
             for key, value in pairs.items()
         ]
-        return f"✅ {folder.name}: {', '.join(changes)}"
+        return f"✅ {folder.name}: {', '.join(changes)}{note}"
+
+    async def _set_target(self, name: str, target: int, now: datetime) -> str:
+        """Map ``name`` to ``target``; a different old channel is unpinned via reset first."""
+        old = await self._storage.get_target(name)
+        note = ""
+        if old is not None and old != target:
+            result = await self._targets.reset(name)
+            if result is not None and result.error is not None:
+                note = (
+                    f" (⚠️ old digest channel {old} still in the folder: {result.error}; "
+                    "remove it by hand)"
+                )
+            elif result is not None and result.removed_from_folder:
+                note = " (old digest channel removed from the folder)"
+        await self._storage.set_target(name, target, now)
+        return note
 
     async def _create(
         self,
@@ -225,14 +240,13 @@ class CommandHandler:
         now: datetime,
     ) -> str:
         folder = await self._storage.create_folder(name, cfg, now)
-        if target is not None:
-            await self._storage.set_target(folder.name, target, now)
+        note = await self._set_target(folder.name, target, now) if target is not None else ""
         if next_run is not None:
             await self._storage.set_next_run(folder.id, next_run)
         when = f"at {fmt(next_run, self._tz)}" if next_run is not None else "within a minute"
         return (
             f"✅ {folder.name}: every {cfg.period_h}h, posts "
-            f"{cfg.min_age_h}–{cfg.min_age_h + cfg.period_h}h old, first fetch {when}"
+            f"{cfg.min_age_h}–{cfg.min_age_h + cfg.period_h}h old, first fetch {when}{note}"
         )
 
     # ---- the rest ------------------------------------------------------------
