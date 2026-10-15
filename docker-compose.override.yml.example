@@ -1,0 +1,6 @@
+# cp docker-compose.override.yml.example docker-compose.override.yml
+# to build the image locally instead of pulling from GHCR.
+services:
+  app:
+    build: .
+    image: telegrief:local

@@ -1,0 +1,40 @@
+services:
+  app:
+    image: ghcr.io/ffoxin/telegrief:latest
+    restart: unless-stopped
+    environment:
+      - TZ=UTC
+      - RUN_AT=02:00
+      - LOG_LEVEL=INFO
+    secrets:
+      - tg_api_id
+      - tg_api_hash
+      - bot_token
+    volumes:
+      - ./.data:/app/data
+      - ./folders.yaml:/app/folders.yaml:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "sh",
+          "-c",
+          "test $$(( $$(date +%s) - $$(stat -c %Y /app/data/heartbeat) )) -lt 300",
+        ]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "5"
+
+secrets:
+  tg_api_id:
+    file: ./secrets/tg_api_id.txt
+  tg_api_hash:
+    file: ./secrets/tg_api_hash.txt
+  bot_token:
+    file: ./secrets/bot_token.txt

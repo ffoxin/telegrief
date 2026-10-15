@@ -1,0 +1,15 @@
+.git
+.venv
+.data
+.superpowers
+secrets
+tests
+docs
+.github
+.mypy_cache
+.ruff_cache
+.pytest_cache
+__pycache__
+*.session*
+folders.yaml
+docker-compose.override.yml

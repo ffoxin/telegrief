@@ -1,0 +1,10 @@
+folders:
+  - name: Memes            # Telegram folder title, exact match
+    batch_size: 10         # posts per batch (default 10)
+    scoring: per_view      # raw | per_subscriber | per_view (default per_view)
+    min_denominator: 200   # floor for views / subscribers (default 200)
+    max_items: 1000        # digest length cap (default 1000)
+  - name: News
+    scoring: per_subscriber
+    min_denominator: 1000
+    # target: -1001234567890   # optional: existing channel where the bot is admin
