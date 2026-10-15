@@ -1,0 +1,286 @@
+"""Telethon user-session gateway: reading, channel creation, relay uploads."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator, Iterable
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from loguru import logger
+from telethon import TelegramClient, events, utils
+from telethon.errors import (
+    ChannelInvalidError,
+    ChannelPrivateError,
+    ChatForwardsRestrictedError,
+    RPCError,
+)
+from telethon.tl import functions, types
+
+from ..models import ChannelInfo, RawPost
+from .protocols import (
+    ChannelUnavailable,
+    CopyFailed,
+    FolderNotFound,
+    ForwardRestricted,
+    MediaTooLarge,
+    ReadHandler,
+)
+
+PREVIEW_CHARS = 80
+FLOOD_SLEEP_THRESHOLD = 120
+
+
+def filter_title(dialog_filter: Any) -> str:
+    title = getattr(dialog_filter, "title", "")
+    return str(getattr(title, "text", title))
+
+
+def select_channel_ids(
+    *,
+    include: Iterable[int],
+    pinned: Iterable[int],
+    exclude: Iterable[int],
+    broadcasts: bool,
+    all_broadcasts: Iterable[int],
+) -> list[int]:
+    chosen: dict[int, None] = {}
+    for channel_id in (*pinned, *include):
+        chosen.setdefault(channel_id, None)
+    if broadcasts:
+        for channel_id in all_broadcasts:
+            chosen.setdefault(channel_id, None)
+    for channel_id in exclude:
+        chosen.pop(channel_id, None)
+    return list(chosen)
+
+
+def is_broadcast(entity: Any) -> bool:
+    return isinstance(entity, types.Channel) and bool(entity.broadcast) and not entity.megagroup
+
+
+def raw_post_from_message(msg: Any, channel_id: int) -> RawPost | None:
+    if getattr(msg, "action", None) is not None or msg.date is None:
+        return None
+    reactions = 0
+    if getattr(msg, "reactions", None) is not None:
+        reactions = sum(int(r.count) for r in msg.reactions.results)
+    replies_obj = getattr(msg, "replies", None)
+    replies = int(replies_obj.replies) if replies_obj is not None else 0
+    text = " ".join((msg.message or "").split())
+    return RawPost(
+        channel_id=channel_id,
+        msg_id=int(msg.id),
+        grouped_id=msg.grouped_id,
+        date=msg.date,
+        views=int(msg.views or 0),
+        forwards=int(msg.forwards or 0),
+        reactions=reactions,
+        replies=replies,
+        preview=text[:PREVIEW_CHARS],
+        noforwards=bool(getattr(msg, "noforwards", False)),
+    )
+
+
+def _ids(messages: Any) -> list[int]:
+    items = messages if isinstance(messages, list) else [messages]
+    return [int(m.id) for m in items if m is not None]
+
+
+class TelethonUser:
+    def __init__(self, client: TelegramClient, me_id: int, tmp_dir: Path) -> None:
+        self._client = client
+        self.me_id = me_id
+        self._tmp = tmp_dir
+        self.bot_username = ""
+
+    @classmethod
+    async def connect(
+        cls, session: Path, api_id: int, api_hash: str, tmp_dir: Path
+    ) -> TelethonUser:
+        client = TelegramClient(
+            str(session), api_id, api_hash, flood_sleep_threshold=FLOOD_SLEEP_THRESHOLD
+        )
+        await client.connect()
+        if not await client.is_user_authorized():
+            raise RuntimeError("user session is not authorized; run `telegrief login` first")
+        me = await client.get_me()
+        logger.info("user session: {} (id {})", me.first_name, me.id)
+        return cls(client, int(me.id), tmp_dir)
+
+    async def run_until_disconnected(self) -> None:
+        await self._client.run_until_disconnected()
+
+    async def disconnect(self) -> None:
+        await self._client.disconnect()
+
+    # ---- folders -------------------------------------------------------------
+
+    async def folder_channels(self, folder_name: str) -> list[int]:
+        result = await self._client(functions.messages.GetDialogFiltersRequest())
+        filters = getattr(result, "filters", result)
+        for dialog_filter in filters:
+            if not isinstance(dialog_filter, types.DialogFilter | types.DialogFilterChatlist):
+                continue
+            if filter_title(dialog_filter) != folder_name:
+                continue
+            include = list(dialog_filter.include_peers)
+            pinned = list(dialog_filter.pinned_peers)
+            exclude = list(getattr(dialog_filter, "exclude_peers", []))
+            peers = {utils.get_peer_id(p): p for p in (*pinned, *include)}
+            all_broadcasts: list[int] = []
+            if getattr(dialog_filter, "broadcasts", False):
+                async for dialog in self._client.iter_dialogs():
+                    if is_broadcast(dialog.entity):
+                        all_broadcasts.append(int(dialog.id))
+            ids = select_channel_ids(
+                include=[utils.get_peer_id(p) for p in include],
+                pinned=[utils.get_peer_id(p) for p in pinned],
+                exclude=[utils.get_peer_id(p) for p in exclude],
+                broadcasts=bool(getattr(dialog_filter, "broadcasts", False)),
+                all_broadcasts=all_broadcasts,
+            )
+            channels: list[int] = []
+            for channel_id in ids:
+                if await self._is_broadcast_channel(peers.get(channel_id, channel_id)):
+                    channels.append(channel_id)
+            return channels
+        raise FolderNotFound(folder_name)
+
+    async def _is_broadcast_channel(self, peer: Any) -> bool:
+        try:
+            entity = await self._client.get_entity(peer)
+        except (ValueError, RPCError) as exc:
+            logger.warning("cannot resolve {}: {}", peer, exc)
+            return False
+        return is_broadcast(entity)
+
+    # ---- channels and posts --------------------------------------------------
+
+    async def channel_info(self, channel_id: int) -> ChannelInfo:
+        try:
+            entity = await self._client.get_entity(channel_id)
+            full = await self._client(functions.channels.GetFullChannelRequest(entity))
+        except (ChannelPrivateError, ChannelInvalidError, ValueError) as exc:
+            raise ChannelUnavailable(f"{channel_id}: {exc}") from exc
+        full_chat = full.full_chat
+        return ChannelInfo(
+            id=utils.get_peer_id(entity),
+            username=entity.username,
+            title=entity.title,
+            subscribers=int(full_chat.participants_count or 0),
+            reactions_enabled=not isinstance(
+                full_chat.available_reactions, types.ChatReactionsNone
+            ),
+            noforwards=bool(entity.noforwards),
+        )
+
+    async def iter_posts(
+        self, channel_id: int, start: datetime, end: datetime
+    ) -> AsyncIterator[RawPost]:
+        try:
+            async for msg in self._client.iter_messages(channel_id, offset_date=end):
+                if msg.date < start:
+                    break
+                post = raw_post_from_message(msg, channel_id)
+                if post is not None:
+                    yield post
+        except (ChannelPrivateError, ChannelInvalidError, ValueError) as exc:
+            raise ChannelUnavailable(f"{channel_id}: {exc}") from exc
+
+    # ---- digest channel ------------------------------------------------------
+
+    async def create_digest_channel(self, title: str, bot_username: str) -> int:
+        result = await self._client(
+            functions.channels.CreateChannelRequest(
+                title=title, about="telegrief digest", broadcast=True
+            )
+        )
+        channel = result.chats[0]
+        bot = await self._client.get_input_entity(bot_username)
+        try:
+            await self._client(functions.channels.InviteToChannelRequest(channel, [bot]))
+        except RPCError as exc:  # bots are often addable only via EditAdmin
+            logger.debug("invite bot: {}", exc)
+        await self._client(
+            functions.channels.EditAdminRequest(
+                channel,
+                bot,
+                types.ChatAdminRights(post_messages=True, edit_messages=True, delete_messages=True),
+                rank="digest",
+            )
+        )
+        return int(utils.get_peer_id(channel))
+
+    # ---- relay ---------------------------------------------------------------
+
+    async def forward_to_relay(self, channel_id: int, msg_ids: list[int]) -> list[int]:
+        try:
+            sent = await self._client.forward_messages(
+                self.bot_username, msg_ids, from_peer=channel_id, silent=True
+            )
+        except ChatForwardsRestrictedError as exc:
+            raise ForwardRestricted(str(exc)) from exc
+        return _ids(sent)
+
+    async def copy_to_relay(
+        self, channel_id: int, msg_ids: list[int], caption: str, max_bytes: int
+    ) -> list[int]:
+        messages = await self._client.get_messages(channel_id, ids=msg_ids)
+        messages = [m for m in messages if m is not None]
+        if not messages:
+            raise CopyFailed("source messages not found")
+        total = sum(int(m.file.size or 0) for m in messages if m.file is not None)
+        if total > max_bytes:
+            raise MediaTooLarge(f"{total} bytes > {max_bytes}")
+        self._tmp.mkdir(parents=True, exist_ok=True)
+        files: list[str] = []
+        try:
+            for m in messages:
+                if m.media is None or isinstance(m.media, types.MessageMediaWebPage):
+                    continue
+                path = await self._client.download_media(
+                    m, file=str(self._tmp / f"{abs(channel_id)}_{m.id}")
+                )
+                if path:
+                    files.append(str(path))
+            if not files:
+                sent = await self._client.send_message(self.bot_username, caption, silent=True)
+            else:
+                sent = await self._client.send_file(
+                    self.bot_username, files, caption=caption, silent=True
+                )
+        except (RPCError, OSError) as exc:
+            raise CopyFailed(str(exc)) from exc
+        finally:
+            for path in files:
+                Path(path).unlink(missing_ok=True)
+        return _ids(sent)
+
+    # ---- read tracking -------------------------------------------------------
+
+    async def read_marker(self, channel_id: int) -> int:
+        peer = await self._client.get_input_entity(channel_id)
+        result = await self._client(
+            functions.messages.GetPeerDialogsRequest(peers=[types.InputDialogPeer(peer)])
+        )
+        return int(result.dialogs[0].read_inbox_max_id) if result.dialogs else 0
+
+    def on_channel_read(self, handler: ReadHandler) -> None:
+        async def _on_update(update: types.UpdateReadChannelInbox) -> None:
+            marked = utils.get_peer_id(types.PeerChannel(update.channel_id))
+            await handler(int(marked), int(update.max_id))
+
+        self._client.add_event_handler(_on_update, events.Raw(types.UpdateReadChannelInbox))
+
+    async def ping_bot(self, bot_username: str) -> None:
+        await self._client.send_message(bot_username, "/start")
+
+
+async def login(session: Path, api_id: int, api_hash: str) -> None:
+    """Interactive one-time login (phone, code, 2FA) creating the session file."""
+    client = TelegramClient(str(session), api_id, api_hash)
+    await client.start()
+    me = await client.get_me()
+    print(f"logged in as {me.first_name} (id {me.id}); session saved to {session}.session")
+    await client.disconnect()
