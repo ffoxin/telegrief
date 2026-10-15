@@ -1,17 +1,16 @@
-from datetime import date
+from datetime import UTC, datetime
 
 import pytest
 
-from telegrief.config import FolderConfig
 from telegrief.delivery import (
     Deliverer,
     bare_id,
     build_caption,
     post_link,
+    render_fetch_note,
     render_footer,
-    render_title,
 )
-from telegrief.models import ChannelInfo, Delivery, DigestItem
+from telegrief.models import ChannelInfo, Delivery, FolderConfig, QueueItem
 from telegrief.tg.protocols import TargetUnavailable
 from tests.fakes import FakeBot, FakeUser
 
@@ -32,26 +31,27 @@ PRIVATE = ChannelInfo(
     noforwards=True,
 )
 TARGET = -100900
+NOW = datetime(2026, 10, 15, 2, 0, tzinfo=UTC)
 
 
 def item(
-    rank: int = 1,
+    msg_ids: tuple[int, ...] = (10,),
     *,
     channel: ChannelInfo = PUBLIC,
-    msg_ids: tuple[int, ...] = (10,),
     noforwards: bool = False,
     preview: str = "lol",
-) -> DigestItem:
-    return DigestItem(
-        digest_id=1,
-        rank=rank,
+) -> QueueItem:
+    return QueueItem(
+        folder_id=1,
         channel_id=channel.id,
         msg_ids=msg_ids,
+        date=NOW,
         engagement=120,
         views=2900,
         score=0.041,
         noforwards=noforwards,
         preview=preview,
+        queued_at=NOW,
     )
 
 
@@ -70,56 +70,37 @@ def test_build_caption_is_source_line() -> None:
     assert build_caption(PRIVATE, 10) == "↗️ Secret <Club> & co · https://t.me/c/5678/10"
 
 
-def test_render_title_escapes_html() -> None:
-    assert render_title("A <b> & co", date(2026, 10, 14), 1, 1).startswith(
-        "📂 A &lt;b&gt; &amp; co ·"
-    )
-
-
-def test_render_title() -> None:
-    assert render_title("Memes", date(2026, 10, 14), 57, 23) == (
-        "📂 Memes · 2026-10-14 · 57 posts from 23 channels"
-    )
-    assert render_title("Memes", date(2026, 10, 14), 0, 0) == (
-        "📂 Memes · 2026-10-14 · no posts in window"
-    )
-
-
 def test_render_footer_lines_and_counter() -> None:
-    cfg = FolderConfig(name="Memes")
     text = render_footer(
-        [item(1), item(2, channel=PRIVATE)],
+        [item(), item((20,), channel=PRIVATE)],
         {PUBLIC.id: PUBLIC, PRIVATE.id: PRIVATE},
-        cfg,
-        shown=10,
-        total=57,
-        done=False,
+        FolderConfig(),
+        pending=47,
     )
     assert text.splitlines() == [
         "#1 · 4.1% · 120👍 / 2.9k👁 · @memes",
         "#2 · 4.1% · 120↗️ / 2.9k👁 · Secret &lt;Club&gt; &amp; co",
-        "shown 10/57",
+        "queued 47",
     ]
 
 
 def test_render_footer_escapes_html() -> None:
-    cfg = FolderConfig(name="Memes")
-    text = render_footer([item(1, channel=PRIVATE)], {PRIVATE.id: PRIVATE}, cfg, 1, 1, True)
+    text = render_footer([item(channel=PRIVATE)], {PRIVATE.id: PRIVATE}, FolderConfig(), 1)
     assert "<Club>" not in text and "&lt;Club&gt;" in text
 
 
-def test_render_footer_done_lines() -> None:
-    cfg = FolderConfig(name="Memes")
-    full = render_footer([item(1)], {PUBLIC.id: PUBLIC}, cfg, shown=57, total=57, done=True)
-    assert full.splitlines()[-1] == "✅ all 57 shown"
-    partial = render_footer([item(1)], {PUBLIC.id: PUBLIC}, cfg, shown=55, total=57, done=True)
-    assert partial.splitlines()[-1] == "✅ done · 55/57 shown"
+def test_render_footer_empty_queue() -> None:
+    text = render_footer([item()], {PUBLIC.id: PUBLIC}, FolderConfig(), pending=0)
+    assert text.splitlines()[-1] == "✅ queue empty"
 
 
 def test_render_footer_unknown_channel_uses_id() -> None:
-    cfg = FolderConfig(name="Memes")
-    text = render_footer([item(1)], {}, cfg, 1, 1, False)
+    text = render_footer([item()], {}, FolderConfig(), 1)
     assert text.splitlines()[0].endswith(f"· {PUBLIC.id}")
+
+
+def test_render_fetch_note() -> None:
+    assert render_fetch_note(37, 120) == "📥 +37 · 120 queued"
 
 
 @pytest.fixture
@@ -136,7 +117,7 @@ def user(bot: FakeBot) -> FakeUser:
 
 async def test_deliver_forwards_via_relay(user: FakeUser, bot: FakeBot) -> None:
     deliverer = Deliverer(user, bot, max_copy_bytes=10)
-    kind, last_id = await deliverer.deliver(TARGET, item(msg_ids=(10, 11, 12)), PUBLIC)
+    kind, last_id = await deliverer.deliver(TARGET, item((10, 11, 12)), PUBLIC)
     assert kind == Delivery.FORWARD
     assert user.forwarded == [(PUBLIC.id, [10, 11, 12])]
     # the bot works with ids from its own id-space, never the user's relay ids

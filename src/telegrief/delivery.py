@@ -5,12 +5,10 @@ from __future__ import annotations
 import asyncio
 import html
 from collections.abc import Awaitable, Callable
-from datetime import date
 
 from loguru import logger
 
-from .config import FolderConfig
-from .models import ChannelInfo, Delivery, DigestItem
+from .models import ChannelInfo, Delivery, FolderConfig, QueueItem
 from .scoring import format_count, format_engagement, format_score
 from .tg.protocols import (
     BotGateway,
@@ -41,13 +39,6 @@ def build_caption(channel: ChannelInfo, msg_id: int) -> str:
     return f"↗️ {channel.display} · {post_link(channel, msg_id)}"
 
 
-def render_title(folder: str, day: date, total: int, n_channels: int) -> str:
-    name = html.escape(folder)
-    if total == 0:
-        return f"📂 {name} · {day:%Y-%m-%d} · no posts in window"
-    return f"📂 {name} · {day:%Y-%m-%d} · {total} posts from {n_channels} channels"
-
-
 def _placeholder(channel_id: int) -> ChannelInfo:
     return ChannelInfo(
         id=channel_id,
@@ -60,28 +51,23 @@ def _placeholder(channel_id: int) -> ChannelInfo:
 
 
 def render_footer(
-    batch: list[DigestItem],
-    channels: dict[int, ChannelInfo],
-    cfg: FolderConfig,
-    shown: int,
-    total: int,
-    done: bool,
+    batch: list[QueueItem], channels: dict[int, ChannelInfo], cfg: FolderConfig, pending: int
 ) -> str:
+    """One line per delivered item (numbered inside the batch), then the queue counter."""
     lines: list[str] = []
-    for item in batch:
+    for n, item in enumerate(batch, start=1):
         channel = channels.get(item.channel_id) or _placeholder(item.channel_id)
         lines.append(
-            f"#{item.rank} · {format_score(item.score, cfg.scoring)} · "
+            f"#{n} · {format_score(item.score, cfg.scoring)} · "
             f"{format_engagement(item.engagement, channel)} / {format_count(item.views)}👁 · "
             f"{html.escape(channel.display)}"
         )
-    if done and shown >= total:
-        lines.append(f"✅ all {total} shown")
-    elif done:
-        lines.append(f"✅ done · {shown}/{total} shown")
-    else:
-        lines.append(f"shown {shown}/{total}")
+    lines.append(f"queued {pending}" if pending else "✅ queue empty")
     return "\n".join(lines)
+
+
+def render_fetch_note(added: int, pending: int) -> str:
+    return f"📥 +{added} · {pending} queued"
 
 
 class Deliverer:
@@ -117,7 +103,7 @@ class Deliverer:
         return max(sent)
 
     async def deliver(
-        self, target: int, item: DigestItem, channel: ChannelInfo
+        self, target: int, item: QueueItem, channel: ChannelInfo
     ) -> tuple[Delivery, int]:
         """Returns (kind, last message id in target). Raises TargetUnavailable."""
         msg_ids = list(item.msg_ids)
