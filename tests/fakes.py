@@ -15,6 +15,8 @@ from telegrief.tg.protocols import (
     MediaTooLarge,
     NextHandler,
     ReadHandler,
+    RelayTimeout,
+    SessionDead,
     TargetUnavailable,
 )
 
@@ -30,6 +32,10 @@ class FakeUser:
         self.restricted: set[int] = set()  # forward_to_relay raises ForwardRestricted
         self.copy_fails: set[int] = set()  # copy_to_relay raises CopyFailed
         self.unavailable: set[int] = set()  # channel_info raises ChannelUnavailable
+        self.broken: set[int] = set()  # channel_info raises RuntimeError (unexpected)
+        self.marker_fails: set[int] = set()  # read_marker raises RuntimeError
+        self.dead = False  # every call raises SessionDead
+        self.bot: FakeBot | None = None  # relay arrivals are delivered here (bot id-space)
         self.forwarded: list[tuple[int, list[int]]] = []
         self.copied: list[tuple[int, list[int], str]] = []
         self.created: list[tuple[str, str]] = []
@@ -39,13 +45,20 @@ class FakeUser:
         self._next_channel_id = -1009000000000
         self._read_handler: ReadHandler | None = None
 
+    def _check_alive(self) -> None:
+        if self.dead:
+            raise SessionDead("AUTH_KEY_UNREGISTERED")
+
     async def folder_channels(self, folder_name: str) -> list[int]:
+        self._check_alive()
         if folder_name not in self.folders:
             raise FolderNotFound(folder_name)
         return list(self.folders[folder_name])
 
     async def channel_info(self, channel_id: int) -> ChannelInfo:
         self.channel_info_calls += 1
+        if channel_id in self.broken:
+            raise RuntimeError("boom")
         if channel_id in self.unavailable or channel_id not in self.channels:
             raise ChannelUnavailable(str(channel_id))
         return self.channels[channel_id]
@@ -66,24 +79,32 @@ class FakeUser:
         self._next_relay_id += n
         return ids
 
+    def _deliver_to_bot(self, n: int) -> None:
+        if self.bot is not None:
+            self.bot.receive_from_owner(n)
+
     async def forward_to_relay(self, channel_id: int, msg_ids: list[int]) -> list[int]:
         if channel_id in self.restricted:
             raise ForwardRestricted(str(channel_id))
         self.forwarded.append((channel_id, list(msg_ids)))
+        self._deliver_to_bot(len(msg_ids))
         return self._relay_ids(len(msg_ids))
 
     async def copy_to_relay(
-        self, channel_id: int, msg_ids: list[int], caption: str, max_bytes: int
+        self, channel_id: int, msg_ids: list[int], caption_head: str, max_bytes: int
     ) -> list[int]:
         size = sum(self.media_bytes.get((channel_id, m), 0) for m in msg_ids)
         if size > max_bytes:
             raise MediaTooLarge(f"{size} > {max_bytes}")
         if channel_id in self.copy_fails:
             raise CopyFailed(str(channel_id))
-        self.copied.append((channel_id, list(msg_ids), caption))
+        self.copied.append((channel_id, list(msg_ids), caption_head))
+        self._deliver_to_bot(len(msg_ids))
         return self._relay_ids(len(msg_ids))
 
     async def read_marker(self, channel_id: int) -> int:
+        if channel_id in self.marker_fails:
+            raise RuntimeError("channel gone")
         return self.read_markers.get(channel_id, 0)
 
     def on_channel_read(self, handler: ReadHandler) -> None:
@@ -106,10 +127,13 @@ class FakeBot:
         self.messages: dict[int, list[tuple[int, str, int | None]]] = {}
         self.edits: list[tuple[int, int, str, int | None]] = []
         self.forwards: list[tuple[int, list[int]]] = []
-        self.resent: list[tuple[int, list[int], str]] = []
+        self.resent: list[tuple[int, list[int]]] = []
         self.deleted: list[list[int]] = []
         self.owner_messages: list[str] = []
         self.bad_targets: set[int] = set()
+        self.inbox: list[int] = []  # bot-side ids of relay arrivals, disjoint from user ids
+        self.cleared = 0
+        self._next_inbox_id = 7000
         self._next_msg_id: dict[int, int] = {}
         self._next_handler: NextHandler | None = None
         self._command_handler: CommandHandlerFn | None = None
@@ -123,14 +147,30 @@ class FakeBot:
         if target in self.bad_targets:
             raise TargetUnavailable(str(target))
 
+    def receive_from_owner(self, n: int) -> None:
+        """Simulate n relay messages arriving in the bot's DM with the owner."""
+        ids = list(range(self._next_inbox_id, self._next_inbox_id + n))
+        self._next_inbox_id += n
+        self.inbox.extend(ids)
+
+    def clear_relay(self) -> None:
+        self.cleared += 1
+        self.inbox.clear()
+
+    async def await_relay(self, count: int, timeout: float) -> list[int]:
+        if len(self.inbox) < count:
+            raise RelayTimeout(f"expected {count}, got {len(self.inbox)}")
+        ids, self.inbox = self.inbox[:count], self.inbox[count:]
+        return ids
+
     async def forward_from_relay(self, target: int, relay_ids: list[int]) -> list[int]:
         self._check(target)
         self.forwards.append((target, list(relay_ids)))
         return self._ids(target, len(relay_ids))
 
-    async def resend_from_relay(self, target: int, relay_ids: list[int], caption: str) -> list[int]:
+    async def resend_from_relay(self, target: int, relay_ids: list[int]) -> list[int]:
         self._check(target)
-        self.resent.append((target, list(relay_ids), caption))
+        self.resent.append((target, list(relay_ids)))
         return self._ids(target, 1)
 
     async def delete_relay(self, relay_ids: list[int]) -> None:

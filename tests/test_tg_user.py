@@ -1,7 +1,15 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from telegrief.tg.user import filter_title, raw_post_from_message, select_channel_ids
+from telethon.tl import types
+
+from telegrief.tg.user import (
+    channel_peer_ids,
+    compose_caption,
+    filter_title,
+    raw_post_from_message,
+    select_channel_ids,
+)
 
 T = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
 
@@ -83,3 +91,21 @@ def test_raw_post_from_message_empty_reactions_results() -> None:
 
 def test_raw_post_from_message_skips_service_messages() -> None:
     assert raw_post_from_message(message(action=SimpleNamespace()), -1001) is None
+
+
+def test_channel_peer_ids_keeps_only_channels() -> None:
+    peers = [
+        types.InputPeerChannel(5, 0),
+        types.InputPeerSelf(),  # "Saved Messages" in a folder
+        types.InputPeerUser(9, 0),
+        types.InputPeerChat(3),
+        types.InputPeerChannel(6, 0),
+    ]
+    assert channel_peer_ids(peers) == [-1000000000005, -1000000000006]
+
+
+def test_compose_caption_appends_full_text_and_truncates() -> None:
+    head = "↗️ @memes · https://t.me/memes/10"
+    assert compose_caption(head, "") == head
+    assert compose_caption(head, "hello") == head + "\n\nhello"
+    assert len(compose_caption(head, "x" * 5000)) == 1024

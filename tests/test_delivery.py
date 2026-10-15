@@ -4,7 +4,6 @@ import pytest
 
 from telegrief.config import FolderConfig
 from telegrief.delivery import (
-    CAPTION_LIMIT,
     Deliverer,
     bare_id,
     build_caption,
@@ -66,14 +65,15 @@ def test_post_link_public_and_private() -> None:
     assert post_link(PRIVATE, 10) == "https://t.me/c/5678/10"
 
 
-def test_build_caption_has_source_and_text() -> None:
-    caption = build_caption(PUBLIC, 10, "hello")
-    assert caption == "↗️ @memes · https://t.me/memes/10\n\nhello"
-    assert build_caption(PUBLIC, 10, "") == "↗️ @memes · https://t.me/memes/10"
+def test_build_caption_is_source_line() -> None:
+    assert build_caption(PUBLIC, 10) == "↗️ @memes · https://t.me/memes/10"
+    assert build_caption(PRIVATE, 10) == "↗️ Secret <Club> & co · https://t.me/c/5678/10"
 
 
-def test_build_caption_truncates() -> None:
-    assert len(build_caption(PUBLIC, 10, "x" * 5000)) == CAPTION_LIMIT
+def test_render_title_escapes_html() -> None:
+    assert render_title("A <b> & co", date(2026, 10, 14), 1, 1).startswith(
+        "📂 A &lt;b&gt; &amp; co ·"
+    )
 
 
 def test_render_title() -> None:
@@ -123,13 +123,15 @@ def test_render_footer_unknown_channel_uses_id() -> None:
 
 
 @pytest.fixture
-def user() -> FakeUser:
-    return FakeUser()
+def bot() -> FakeBot:
+    return FakeBot()
 
 
 @pytest.fixture
-def bot() -> FakeBot:
-    return FakeBot()
+def user(bot: FakeBot) -> FakeUser:
+    user = FakeUser()
+    user.bot = bot
+    return user
 
 
 async def test_deliver_forwards_via_relay(user: FakeUser, bot: FakeBot) -> None:
@@ -137,9 +139,20 @@ async def test_deliver_forwards_via_relay(user: FakeUser, bot: FakeBot) -> None:
     kind, last_id = await deliverer.deliver(TARGET, item(msg_ids=(10, 11, 12)), PUBLIC)
     assert kind == Delivery.FORWARD
     assert user.forwarded == [(PUBLIC.id, [10, 11, 12])]
-    assert bot.forwards == [(TARGET, [1000, 1001, 1002])]
-    assert bot.deleted == [[1000, 1001, 1002]]
+    # the bot works with ids from its own id-space, never the user's relay ids
+    assert bot.forwards == [(TARGET, [7000, 7001, 7002])]
+    assert bot.deleted == [[7000, 7001, 7002]]
+    assert bot.cleared == 1
     assert last_id == 3  # three messages landed in TARGET, ids 1..3
+
+
+async def test_deliver_relay_timeout_falls_back_to_link(user: FakeUser, bot: FakeBot) -> None:
+    user.bot = None  # relay messages never reach the bot
+    deliverer = Deliverer(user, bot, max_copy_bytes=10)
+    kind, _ = await deliverer.deliver(TARGET, item(), PUBLIC)
+    assert kind == Delivery.LINK
+    assert bot.texts(TARGET) == ["https://t.me/memes/10"]
+    assert user.copied == []  # copying would time out the same way; go straight to link
 
 
 async def test_deliver_restricted_error_falls_back_to_copy(user: FakeUser, bot: FakeBot) -> None:
@@ -147,9 +160,9 @@ async def test_deliver_restricted_error_falls_back_to_copy(user: FakeUser, bot: 
     deliverer = Deliverer(user, bot, max_copy_bytes=10)
     kind, last_id = await deliverer.deliver(TARGET, item(), PUBLIC)
     assert kind == Delivery.COPY
-    assert user.copied == [(PUBLIC.id, [10], build_caption(PUBLIC, 10, "lol"))]
-    assert bot.resent == [(TARGET, [1000], build_caption(PUBLIC, 10, "lol"))]
-    assert bot.deleted == [[1000]]
+    assert user.copied == [(PUBLIC.id, [10], "↗️ @memes · https://t.me/memes/10")]
+    assert bot.resent == [(TARGET, [7000])]
+    assert bot.deleted == [[7000]]
     assert last_id == 1
 
 
@@ -183,3 +196,4 @@ async def test_deliver_target_error_propagates(user: FakeUser, bot: FakeBot) -> 
     deliverer = Deliverer(user, bot, max_copy_bytes=10)
     with pytest.raises(TargetUnavailable):
         await deliverer.deliver(TARGET, item(), PUBLIC)
+    assert bot.deleted == [[7000]]  # relay copy is cleaned up even on failure

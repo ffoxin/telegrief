@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable
+import functools
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -10,10 +11,15 @@ from typing import Any
 from loguru import logger
 from telethon import TelegramClient, events, utils
 from telethon.errors import (
-    ChannelInvalidError,
-    ChannelPrivateError,
+    AuthKeyDuplicatedError,
+    AuthKeyInvalidError,
+    AuthKeyUnregisteredError,
     ChatForwardsRestrictedError,
     RPCError,
+    SessionExpiredError,
+    SessionRevokedError,
+    UserDeactivatedBanError,
+    UserDeactivatedError,
 )
 from telethon.tl import functions, types
 
@@ -25,10 +31,36 @@ from .protocols import (
     ForwardRestricted,
     MediaTooLarge,
     ReadHandler,
+    SessionDead,
 )
 
 PREVIEW_CHARS = 80
+CAPTION_LIMIT = 1024
 FLOOD_SLEEP_THRESHOLD = 120
+FATAL_ERRORS = (
+    AuthKeyUnregisteredError,
+    AuthKeyInvalidError,
+    AuthKeyDuplicatedError,
+    SessionExpiredError,
+    SessionRevokedError,
+    UserDeactivatedError,
+    UserDeactivatedBanError,
+)
+
+
+def _translate_fatal[**P, R](
+    fn: Callable[P, Coroutine[Any, Any, R]],
+) -> Callable[P, Coroutine[Any, Any, R]]:
+    """Turn Telethon's 'session is gone' errors into SessionDead."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return await fn(*args, **kwargs)
+        except FATAL_ERRORS as exc:
+            raise SessionDead(str(exc)) from exc
+
+    return wrapper
 
 
 def filter_title(dialog_filter: Any) -> str:
@@ -57,6 +89,16 @@ def select_channel_ids(
 
 def is_broadcast(entity: Any) -> bool:
     return isinstance(entity, types.Channel) and bool(entity.broadcast) and not entity.megagroup
+
+
+def channel_peer_ids(peers: Iterable[Any]) -> list[int]:
+    """Marked ids of the channel peers only; users, chats and Saved Messages are dropped."""
+    return [utils.get_peer_id(p) for p in peers if isinstance(p, types.InputPeerChannel)]
+
+
+def compose_caption(head: str, text: str) -> str:
+    caption = f"{head}\n\n{text}" if text else head
+    return caption[:CAPTION_LIMIT]
 
 
 def raw_post_from_message(msg: Any, channel_id: int) -> RawPost | None:
@@ -116,6 +158,7 @@ class TelethonUser:
 
     # ---- folders -------------------------------------------------------------
 
+    @_translate_fatal
     async def folder_channels(self, folder_name: str) -> list[int]:
         result = await self._client(functions.messages.GetDialogFiltersRequest())
         filters = getattr(result, "filters", result)
@@ -124,8 +167,12 @@ class TelethonUser:
                 continue
             if filter_title(dialog_filter) != folder_name:
                 continue
-            include = list(dialog_filter.include_peers)
-            pinned = list(dialog_filter.pinned_peers)
+            include = [
+                p for p in dialog_filter.include_peers if isinstance(p, types.InputPeerChannel)
+            ]
+            pinned = [
+                p for p in dialog_filter.pinned_peers if isinstance(p, types.InputPeerChannel)
+            ]
             exclude = list(getattr(dialog_filter, "exclude_peers", []))
             peers = {utils.get_peer_id(p): p for p in (*pinned, *include)}
             all_broadcasts: list[int] = []
@@ -134,9 +181,9 @@ class TelethonUser:
                     if is_broadcast(dialog.entity):
                         all_broadcasts.append(int(dialog.id))
             ids = select_channel_ids(
-                include=[utils.get_peer_id(p) for p in include],
-                pinned=[utils.get_peer_id(p) for p in pinned],
-                exclude=[utils.get_peer_id(p) for p in exclude],
+                include=channel_peer_ids(include),
+                pinned=channel_peer_ids(pinned),
+                exclude=channel_peer_ids(exclude),
                 broadcasts=bool(getattr(dialog_filter, "broadcasts", False)),
                 all_broadcasts=all_broadcasts,
             )
@@ -157,12 +204,15 @@ class TelethonUser:
 
     # ---- channels and posts --------------------------------------------------
 
+    @_translate_fatal
     async def channel_info(self, channel_id: int) -> ChannelInfo:
         try:
             entity = await self._client.get_entity(channel_id)
             full = await self._client(functions.channels.GetFullChannelRequest(entity))
-        except (ChannelPrivateError, ChannelInvalidError, ValueError) as exc:
-            raise ChannelUnavailable(f"{channel_id}: {exc}") from exc
+        except FATAL_ERRORS:
+            raise
+        except (RPCError, ValueError) as exc:
+            raise ChannelUnavailable(str(exc)) from exc
         full_chat = full.full_chat
         return ChannelInfo(
             id=utils.get_peer_id(entity),
@@ -185,11 +235,14 @@ class TelethonUser:
                 post = raw_post_from_message(msg, channel_id)
                 if post is not None:
                     yield post
-        except (ChannelPrivateError, ChannelInvalidError, ValueError) as exc:
-            raise ChannelUnavailable(f"{channel_id}: {exc}") from exc
+        except FATAL_ERRORS as exc:
+            raise SessionDead(str(exc)) from exc
+        except (RPCError, ValueError) as exc:
+            raise ChannelUnavailable(str(exc)) from exc
 
     # ---- digest channel ------------------------------------------------------
 
+    @_translate_fatal
     async def create_digest_channel(self, title: str, bot_username: str) -> int:
         result = await self._client(
             functions.channels.CreateChannelRequest(
@@ -214,6 +267,7 @@ class TelethonUser:
 
     # ---- relay ---------------------------------------------------------------
 
+    @_translate_fatal
     async def forward_to_relay(self, channel_id: int, msg_ids: list[int]) -> list[int]:
         try:
             sent = await self._client.forward_messages(
@@ -223,8 +277,9 @@ class TelethonUser:
             raise ForwardRestricted(str(exc)) from exc
         return _ids(sent)
 
+    @_translate_fatal
     async def copy_to_relay(
-        self, channel_id: int, msg_ids: list[int], caption: str, max_bytes: int
+        self, channel_id: int, msg_ids: list[int], caption_head: str, max_bytes: int
     ) -> list[int]:
         messages = await self._client.get_messages(channel_id, ids=msg_ids)
         messages = [m for m in messages if m is not None]
@@ -233,6 +288,8 @@ class TelethonUser:
         total = sum(int(m.file.size or 0) for m in messages if m.file is not None)
         if total > max_bytes:
             raise MediaTooLarge(f"{total} bytes > {max_bytes}")
+        text = next((m.message for m in messages if m.message), "")
+        caption = compose_caption(caption_head, text)
         self._tmp.mkdir(parents=True, exist_ok=True)
         files: list[str] = []
         try:
@@ -245,7 +302,9 @@ class TelethonUser:
                 if path:
                     files.append(str(path))
             if not files:
-                sent = await self._client.send_message(self.bot_username, caption, silent=True)
+                sent = await self._client.send_message(
+                    self.bot_username, caption, silent=True, link_preview=False
+                )
             else:
                 sent = await self._client.send_file(
                     self.bot_username, files, caption=caption, silent=True
@@ -259,6 +318,7 @@ class TelethonUser:
 
     # ---- read tracking -------------------------------------------------------
 
+    @_translate_fatal
     async def read_marker(self, channel_id: int) -> int:
         peer = await self._client.get_input_entity(channel_id)
         result = await self._client(
@@ -273,6 +333,7 @@ class TelethonUser:
 
         self._client.add_event_handler(_on_update, events.Raw(types.UpdateReadChannelInbox))
 
+    @_translate_fatal
     async def ping_bot(self, bot_username: str) -> None:
         await self._client.send_message(bot_username, "/start")
 

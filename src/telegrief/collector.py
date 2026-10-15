@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from .models import ChannelInfo, Post, RawPost
-from .tg.protocols import ChannelUnavailable, UserGateway
+from .tg.protocols import ChannelUnavailable, SessionDead, UserGateway
 
 if TYPE_CHECKING:
     from .storage import Storage
@@ -85,6 +85,12 @@ class Collector:
                 ]
             except ChannelUnavailable as exc:
                 logger.warning("folder {}: skipping channel {}: {}", folder, channel_id, exc)
+                result.errors.append(f"{channel_id}: {exc}")
+                continue
+            except SessionDead:
+                raise
+            except Exception as exc:
+                logger.exception("folder {}: channel {} failed, skipping", folder, channel_id)
                 result.errors.append(f"{channel_id}: {exc}")
                 continue
             result.channels[channel_id] = info

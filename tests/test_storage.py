@@ -160,3 +160,15 @@ async def test_update_digest(storage: Storage) -> None:
     digest.status = DigestStatus.DONE
     await storage.update_digest(digest)
     assert await storage.get_digest(digest.id) == digest
+
+
+async def test_update_digest_does_not_reopen_closed_digest(storage: Storage) -> None:
+    start, end = NOW - timedelta(hours=48), NOW - timedelta(hours=24)
+    first = await storage.create_digest("Memes", -100500, start, end, [scored(1, 1.0)], NOW)
+    await storage.create_digest("Memes", -100500, start, end, [scored(2, 1.0)], NOW)
+    first.footer_msg_id = 9  # a batch that was in flight when the new run closed it
+    await storage.update_digest(first)
+    stored = await storage.get_digest(first.id)
+    assert stored is not None
+    assert stored.status == DigestStatus.DONE
+    assert stored.footer_msg_id is None

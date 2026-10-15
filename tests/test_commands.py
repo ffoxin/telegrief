@@ -37,6 +37,7 @@ class Harness:
     def __init__(self, storage: Storage, tmp_path: Path) -> None:
         self.user = FakeUser()
         self.bot = FakeBot()
+        self.user.bot = self.bot
         self.storage = storage
         self.folders = FoldersConfig(
             folders=[FolderConfig(name="Memes", batch_size=2), FolderConfig(name="My News")]

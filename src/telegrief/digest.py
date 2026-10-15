@@ -16,7 +16,14 @@ from .delivery import Deliverer, render_footer, render_title
 from .models import ChannelInfo, Digest, DigestStatus, ItemState
 from .scoring import rank
 from .targets import TargetResolver
-from .tg.protocols import BotGateway, ChannelUnavailable, GatewayError, UserGateway
+from .tg.protocols import (
+    BotGateway,
+    ChannelUnavailable,
+    GatewayError,
+    SessionDead,
+    TargetUnavailable,
+    UserGateway,
+)
 
 if TYPE_CHECKING:
     from .storage import Storage
@@ -47,6 +54,7 @@ class DigestService:
         folders: Callable[[], FoldersConfig],
         clock: Callable[[], datetime] = _utcnow,
         defer: Deferrer = _asyncio_defer,
+        on_fatal: Callable[[Exception], None] | None = None,
     ) -> None:
         self._user = user
         self._bot = bot
@@ -58,8 +66,15 @@ class DigestService:
         self._folders = folders
         self._clock = clock
         self._defer = defer
+        self._on_fatal = on_fatal
         self._locks: dict[int, asyncio.Lock] = {}
+        self._run_locks: dict[str, asyncio.Lock] = {}
         self._rechecks: set[int] = set()
+
+    def _fatal(self, exc: Exception) -> None:
+        logger.critical("user session is dead: {}", exc)
+        if self._on_fatal is not None:
+            self._on_fatal(exc)
 
     def bind(self) -> None:
         self._user.on_channel_read(self.on_read)
@@ -73,6 +88,11 @@ class DigestService:
     async def run_folder(
         self, cfg: FolderConfig, from_h: int | None = None, to_h: int | None = None
     ) -> str:
+        lock = self._run_locks.setdefault(cfg.name, asyncio.Lock())
+        async with lock:
+            return await self._run_folder(cfg, from_h, to_h)
+
+    async def _run_folder(self, cfg: FolderConfig, from_h: int | None, to_h: int | None) -> str:
         now = self._clock()
         start, end = window(
             now,
@@ -81,6 +101,11 @@ class DigestService:
         )
         try:
             digest, errors = await self.build_digest(cfg, now, start, end)
+        except SessionDead as exc:
+            message = f"💀 {cfg.name}: user session dead, run `telegrief login`: {exc}"
+            await self._bot.send_owner(message)
+            self._fatal(exc)
+            return message
         except Exception as exc:
             logger.exception("folder {}: run failed", cfg.name)
             message = f"❌ {cfg.name}: {exc}"
@@ -103,22 +128,22 @@ class DigestService:
         title = render_title(cfg.name, day, digest.total, len({s.channel.id for s in scored}))
         try:
             digest.title_msg_id = await self._bot.send_text(target, title)
-        except GatewayError:
-            digest.status = DigestStatus.FAILED
+            if digest.total == 0:
+                digest.status = DigestStatus.DONE
+                await self._storage.update_digest(digest)
+                return digest, collected.errors
             await self._storage.update_digest(digest)
-            raise
-        if digest.total == 0:
-            digest.status = DigestStatus.DONE
-            await self._storage.update_digest(digest)
-            return digest, collected.errors
-        await self._storage.update_digest(digest)
-        try:
-            await self.send_batch(digest.id)
-        except GatewayError:
-            digest.status = DigestStatus.FAILED
-            await self._storage.update_digest(digest)
+            await self.send_batch(digest.id, manual=True)
+        except Exception:
+            await self._mark_failed(digest.id)
             raise
         return digest, collected.errors
+
+    async def _mark_failed(self, digest_id: int) -> None:
+        digest = await self._storage.get_digest(digest_id)
+        if digest is not None and digest.status == DigestStatus.OPEN:
+            digest.status = DigestStatus.FAILED
+            await self._storage.update_digest(digest)
 
     # ---- batches -------------------------------------------------------------
 
@@ -135,8 +160,18 @@ class DigestService:
                 noforwards=False,
             )
 
-    async def send_batch(self, digest_id: int) -> int:
-        """Deliver the next batch of pending items. Returns how many were attempted."""
+    def _too_soon(self, digest: Digest, now: datetime) -> bool:
+        if digest.last_batch_at is None:
+            return False
+        elapsed = (now - digest.last_batch_at).total_seconds()
+        return elapsed < self._settings.auto_next_min_interval_s
+
+    async def send_batch(self, digest_id: int, *, manual: bool = False) -> int:
+        """Deliver the next batch of pending items. Returns how many were attempted.
+
+        Automatic sends (read marker) re-check pacing under the lock, so two
+        triggers that both passed the pre-check collapse into one batch.
+        """
         lock = self._locks.setdefault(digest_id, asyncio.Lock())
         async with lock:
             digest = await self._storage.get_digest(digest_id)
@@ -149,6 +184,8 @@ class DigestService:
                 )
                 return 0
             now = self._clock()
+            if not manual and self._too_soon(digest, now):
+                return 0
             items = await self._storage.pending_items(digest.id, cfg.batch_size)
             channels: dict[int, ChannelInfo] = {}
             for item in items:
@@ -157,7 +194,7 @@ class DigestService:
                     channel = channels[item.channel_id] = await self._channel(item.channel_id, now)
                 try:
                     kind, last_id = await self._deliverer.deliver(digest.target, item, channel)
-                except GatewayError:
+                except (TargetUnavailable, SessionDead):
                     raise
                 except Exception:
                     logger.exception("digest {}: item #{} failed", digest.id, item.rank)
@@ -199,9 +236,18 @@ class DigestService:
             await self._storage.update_digest(digest)
             return len(items)
 
-    async def _guarded_send(self, digest_id: int) -> None:
+    async def _guarded_send(self, digest_id: int, *, manual: bool) -> None:
         try:
-            await self.send_batch(digest_id)
+            await self.send_batch(digest_id, manual=manual)
+        except SessionDead as exc:
+            await self._bot.send_owner(f"💀 digest {digest_id}: user session dead: {exc}")
+            self._fatal(exc)
+        except TargetUnavailable as exc:
+            logger.error("digest {}: target unusable: {}", digest_id, exc)
+            await self._mark_failed(digest_id)
+            await self._bot.send_owner(
+                f"❌ digest {digest_id}: channel unusable, marked failed: {exc}"
+            )
         except Exception as exc:
             logger.exception("digest {}: batch failed", digest_id)
             await self._bot.send_owner(f"❌ digest {digest_id}: {exc}")
@@ -224,7 +270,7 @@ class DigestService:
             else interval
         )
         if elapsed >= interval:
-            await self._guarded_send(digest.id)
+            await self._guarded_send(digest.id, manual=False)
             return
         if digest.id in self._rechecks:
             return
@@ -240,9 +286,19 @@ class DigestService:
         self._defer(interval - elapsed, recheck)
 
     async def on_next_button(self, digest_id: int) -> None:
-        await self._guarded_send(digest_id)
+        await self._guarded_send(digest_id, manual=True)
 
     async def catch_up(self) -> None:
+        """After a restart: a batch read while we were down still triggers the next."""
         for digest in await self._storage.open_digests():
-            marker = await self._user.read_marker(digest.target)
+            try:
+                marker = await self._user.read_marker(digest.target)
+            except SessionDead as exc:
+                self._fatal(exc)
+                return
+            except Exception as exc:
+                logger.exception("digest {}: cannot read marker, marking failed", digest.id)
+                await self._mark_failed(digest.id)
+                await self._bot.send_owner(f"❌ digest {digest.id}: channel unusable: {exc}")
+                continue
             await self.on_read(digest.target, marker)

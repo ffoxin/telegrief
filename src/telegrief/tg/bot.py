@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 from typing import Any
@@ -16,10 +17,18 @@ from telethon.errors import (
     MessageNotModifiedError,
     RPCError,
 )
+from telethon.tl import types
 
-from .protocols import CommandHandlerFn, ForwardRestricted, NextHandler, TargetUnavailable
+from .protocols import (
+    CommandHandlerFn,
+    ForwardRestricted,
+    NextHandler,
+    RelayTimeout,
+    TargetUnavailable,
+)
 
 FLOOD_SLEEP_THRESHOLD = 120
+REPLY_LIMIT = 4000
 _CALLBACK = re.compile(rb"^next:(\d+)$")
 _COMMAND = re.compile(r"^/([a-zA-Z_]+)(?:@\w+)?(?:\s+(.*))?$", re.DOTALL)
 _TARGET_ERRORS = (ChannelPrivateError, ChatAdminRequiredError, ChatWriteForbiddenError, ValueError)
@@ -50,11 +59,59 @@ def _ids(messages: Any) -> list[int]:
     return [int(m.id) for m in items if m is not None]
 
 
+def relay_media(messages: list[Any]) -> list[Any]:
+    """Media objects worth re-sending; link previews are not media."""
+    return [
+        m.media
+        for m in messages
+        if m is not None
+        and m.media is not None
+        and not isinstance(m.media, types.MessageMediaWebPage)
+    ]
+
+
+def _is_relay_message(msg: Any) -> bool:
+    if msg.fwd_from is not None or msg.media is not None:
+        return True
+    return not (msg.message or "").startswith("/")
+
+
 class TelethonBot:
     def __init__(self, client: TelegramClient, username: str, owner_id: int) -> None:
         self._client = client
         self.username = username
         self._owner_id = owner_id
+        # Relay inbox: ids (in the bot's own id-space) of messages the owner sent us.
+        self._inbox: list[int] = []
+        self._inbox_changed = asyncio.Event()
+        self._client.add_event_handler(
+            self._track_relay, events.NewMessage(from_users=[owner_id], incoming=True)
+        )
+
+    async def _track_relay(self, event: Any) -> None:
+        msg = event.message
+        if _is_relay_message(msg):
+            self._inbox.append(int(msg.id))
+            self._inbox_changed.set()
+
+    def clear_relay(self) -> None:
+        self._inbox.clear()
+        self._inbox_changed.clear()
+
+    async def await_relay(self, count: int, timeout: float) -> list[int]:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while len(self._inbox) < count:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise RelayTimeout(f"expected {count} relay messages, got {len(self._inbox)}")
+            self._inbox_changed.clear()
+            try:
+                await asyncio.wait_for(self._inbox_changed.wait(), remaining)
+            except TimeoutError:
+                continue
+        ids, self._inbox = self._inbox[:count], self._inbox[count:]
+        return ids
 
     @classmethod
     async def connect(
@@ -87,9 +144,10 @@ class TelethonBot:
             raise TargetUnavailable(f"{target}: {exc}") from exc
         return _ids(sent)
 
-    async def resend_from_relay(self, target: int, relay_ids: list[int], caption: str) -> list[int]:
+    async def resend_from_relay(self, target: int, relay_ids: list[int]) -> list[int]:
         messages = await self._client.get_messages(self._owner_id, ids=relay_ids)
-        media = [m.media for m in messages if m is not None and m.media is not None]
+        caption = next((m.message for m in messages if m is not None and m.message), "")
+        media = relay_media(list(messages))
         try:
             if not media:
                 sent = await self._client.send_message(
@@ -156,8 +214,8 @@ class TelethonBot:
 
     async def send_owner(self, text: str) -> None:
         try:
-            await self._client.send_message(self._owner_id, text)
-        except RPCError as exc:
+            await self._client.send_message(self._owner_id, text[:REPLY_LIMIT])
+        except (RPCError, ValueError) as exc:
             logger.error("cannot message owner: {}", exc)
 
     # ---- events ----------------------------------------------------------------
@@ -183,8 +241,12 @@ class TelethonBot:
             if command == "start":
                 await event.delete()
                 return
-            reply = await handler(command, args)
-            await event.respond(reply or "ok")
+            try:
+                reply = await handler(command, args)
+            except Exception as exc:
+                logger.exception("command /{} failed", command)
+                reply = f"❌ {exc}"
+            await event.respond((reply or "ok")[:REPLY_LIMIT])
 
         self._client.add_event_handler(
             _on_message,

@@ -37,6 +37,14 @@ class TargetUnavailable(GatewayError):
     """Digest channel is gone or the bot lacks rights there."""
 
 
+class RelayTimeout(GatewayError):
+    """A message sent to the bot's chat never showed up on the bot's side."""
+
+
+class SessionDead(GatewayError):
+    """The user session is no longer authorized; the operator must log in again."""
+
+
 ReadHandler = Callable[[int, int], Awaitable[None]]
 NextHandler = Callable[[int], Awaitable[None]]
 CommandHandlerFn = Callable[[str, list[str]], Awaitable[str]]
@@ -60,7 +68,7 @@ class UserGateway(Protocol):
     async def forward_to_relay(self, channel_id: int, msg_ids: list[int]) -> list[int]: ...
 
     async def copy_to_relay(
-        self, channel_id: int, msg_ids: list[int], caption: str, max_bytes: int
+        self, channel_id: int, msg_ids: list[int], caption_head: str, max_bytes: int
     ) -> list[int]: ...
 
     async def read_marker(self, channel_id: int) -> int: ...
@@ -75,11 +83,13 @@ class BotGateway(Protocol):
     @property
     def username(self) -> str: ...
 
+    def clear_relay(self) -> None: ...
+
+    async def await_relay(self, count: int, timeout: float) -> list[int]: ...
+
     async def forward_from_relay(self, target: int, relay_ids: list[int]) -> list[int]: ...
 
-    async def resend_from_relay(
-        self, target: int, relay_ids: list[int], caption: str
-    ) -> list[int]: ...
+    async def resend_from_relay(self, target: int, relay_ids: list[int]) -> list[int]: ...
 
     async def delete_relay(self, relay_ids: list[int]) -> None: ...
 

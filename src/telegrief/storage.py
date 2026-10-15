@@ -314,11 +314,13 @@ class Storage:
         return _digest_from_row(row) if row is not None else None
 
     async def update_digest(self, digest: Digest) -> None:
+        """Persist title/footer/status/last_batch_at. Only an OPEN row is updated, so a
+        batch that was in flight when a new run closed the digest cannot reopen it."""
         await self._conn.execute(
             """
             UPDATE digests SET title_msg_id = ?, footer_msg_id = ?, footer_text = ?,
                 status = ?, last_batch_at = ?
-            WHERE id = ?
+            WHERE id = ? AND status = ?
             """,
             (
                 digest.title_msg_id,
@@ -327,6 +329,7 @@ class Storage:
                 digest.status,
                 _iso(digest.last_batch_at),
                 digest.id,
+                DigestStatus.OPEN,
             ),
         )
         await self._conn.commit()

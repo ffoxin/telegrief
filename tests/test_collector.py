@@ -147,3 +147,14 @@ async def test_collect_marks_noforwards_from_channel(storage: Storage) -> None:
 async def test_collect_raises_for_missing_folder(storage: Storage) -> None:
     with pytest.raises(FolderNotFound):
         await Collector(FakeUser(), storage).collect("Nope", START, END, NOW)
+
+
+async def test_collect_skips_channel_on_unexpected_error(storage: Storage) -> None:
+    user = FakeUser()
+    user.folders["Memes"] = [CH_ID, -1002]
+    user.channels[CH_ID] = CH
+    user.posts[CH_ID] = [raw(1)]
+    user.broken.add(-1002)
+    result = await Collector(user, storage).collect("Memes", START, END, NOW)
+    assert [p.msg_id for p in result.posts] == [1]
+    assert result.errors == ["-1002: boom"]

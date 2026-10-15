@@ -36,7 +36,10 @@ Success criteria:
   bot's private chat (relay), bot re-forwards them into the digest channel and
   deletes the relay copy. Telegram preserves the original "Forwarded from"
   header on a forward of a forward, so the header still links to the original
-  post.
+  post. Message ids in a private chat are per-account, so the ids the user
+  session gets back are not the bot's ids: the bot learns relay ids from its
+  own incoming updates (one item through the relay at a time, with a timeout
+  that falls back to a link).
 - **Auto-next uses the read marker.** Telegram sends `UpdateReadChannelInbox`
   to the user session when the user reads a channel on any device. When the
   marker passes the last post of the current batch, the next batch is sent,

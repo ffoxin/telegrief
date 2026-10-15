@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,7 @@ from telegrief.digest import DigestService
 from telegrief.models import ChannelInfo, DigestStatus, ItemState, RawPost
 from telegrief.storage import Storage
 from telegrief.targets import TargetResolver
+from telegrief.tg.protocols import SessionDead
 from tests.fakes import FakeBot, FakeUser
 
 NOW = datetime(2026, 10, 15, 2, 0, tzinfo=UTC)
@@ -49,9 +51,11 @@ class Harness:
     def __init__(self, storage: Storage, tmp_path: Path, batch_size: int = 2) -> None:
         self.user = FakeUser()
         self.bot = FakeBot()
+        self.user.bot = self.bot
         self.storage = storage
         self.clock = Clock()
         self.defer = Deferred()
+        self.fatal: list[Exception] = []
         self.folders = FoldersConfig(folders=[FolderConfig(name="Memes", batch_size=batch_size)])
         self.settings = Settings(
             _secrets_dir=None,
@@ -75,6 +79,7 @@ class Harness:
             folders=lambda: self.folders,
             clock=self.clock,
             defer=self.defer,
+            on_fatal=self.fatal.append,
         )
         self.service.bind()
         self.user.folders["Memes"] = [CH_ID]
@@ -302,3 +307,55 @@ async def test_send_batch_without_folder_config_is_noop(h: Harness) -> None:
 async def test_bind_wires_both_gateways(h: Harness) -> None:
     assert h.user._read_handler is not None
     assert h.bot._next_handler is not None
+
+
+async def test_concurrent_read_events_send_one_batch(h: Harness) -> None:
+    h.add_posts(5)
+    await h.service.run_folder(h.folders.folders[0])
+    target = h.target
+    h.clock.advance(120)
+    await asyncio.gather(h.user.emit_read(target, 3), h.user.emit_read(target, 3))
+    assert len(h.user.forwarded) == 4  # one extra batch, not two
+
+
+async def test_next_button_with_dead_target_marks_failed(h: Harness) -> None:
+    h.add_posts(5)
+    await h.service.run_folder(h.folders.folders[0])
+    h.bot.bad_targets.add(h.target)
+    await h.bot.press_next(1)
+    digest = await h.storage.get_digest(1)
+    assert digest is not None and digest.status == DigestStatus.FAILED
+    assert h.bot.owner_messages and h.bot.owner_messages[-1].startswith("❌ digest 1")
+
+
+async def test_catch_up_survives_marker_failure(h: Harness) -> None:
+    h.add_posts(5)
+    await h.service.run_folder(h.folders.folders[0])
+    h.user.marker_fails.add(h.target)
+    await h.service.catch_up()  # must not raise
+    digest = await h.storage.get_digest(1)
+    assert digest is not None and digest.status == DigestStatus.FAILED
+    assert h.bot.owner_messages and "channel gone" in h.bot.owner_messages[-1]
+
+
+async def test_unexpected_error_after_create_marks_failed(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h.add_posts(2)
+
+    async def broken_send_text(*args: object, **kwargs: object) -> int:
+        raise RuntimeError("sqlite is on fire")
+
+    monkeypatch.setattr(h.bot, "send_text", broken_send_text)
+    result = await h.service.run_folder(h.folders.folders[0])
+    assert result.startswith("❌ Memes:")
+    digest = await h.storage.get_digest(1)
+    assert digest is not None and digest.status == DigestStatus.FAILED
+
+
+async def test_session_dead_triggers_fatal_hook(h: Harness) -> None:
+    h.user.dead = True
+    result = await h.service.run_folder(h.folders.folders[0])
+    assert result.startswith("💀 Memes:")
+    assert h.bot.owner_messages == [result]
+    assert len(h.fatal) == 1 and isinstance(h.fatal[0], SessionDead)
