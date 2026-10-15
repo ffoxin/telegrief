@@ -65,8 +65,22 @@ uv sync
 cp docker-compose.override.yml.example docker-compose.override.yml  # local image
 ```
 
-## Update on the server
+## Deploy
 
-```bash
-./update.sh
-```
+Every push to `main` builds the image and then SSHes to the server, which pulls
+the repo and the image and restarts the service (`deploy.sh`). One-time setup:
+
+1. On the server: clone the repo, add `secrets/`, `folders.yaml`, run `login`
+   (see Quick start). The clone must be fast-forwardable (`git pull --ff-only`).
+2. Generate a key and restrict it to the deploy command on the server:
+
+   ```bash
+   ssh-keygen -t ed25519 -N "" -C telegrief-deploy -f deploy_key
+   echo 'command="cd /home/vps/services/telegrief && git pull --ff-only --quiet && exec ./deploy.sh",restrict '"$(cat deploy_key.pub)" \
+     | ssh server 'cat >> ~/.ssh/authorized_keys'
+   ```
+
+3. In the GitHub repo: secret `DEPLOY_SSH_KEY` (contents of `deploy_key`) and
+   variables `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_KNOWN_HOSTS`
+   (`ssh-keyscan -t ed25519 <host>` output, verified against a trusted
+   `known_hosts`). Delete the local `deploy_key` afterwards.
