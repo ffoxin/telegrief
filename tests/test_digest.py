@@ -137,7 +137,8 @@ async def test_run_folder_creates_digest_and_sends_first_batch(h: Harness) -> No
     assert digest.footer_msg_id == footer_id
     assert digest.footer_text == footer
     assert digest.last_batch_at == NOW
-    assert await h.storage.max_sent_msg_id(1) == 3  # title=1, posts=2,3, footer=4
+    # title=1, posts=2,3, footer=4
+    assert [i.sent_msg_id for i in await h.storage.batch_items(1, NOW)] == [2, 3]
 
 
 async def test_window_uses_settings_and_overrides(h: Harness) -> None:
@@ -181,6 +182,21 @@ async def test_on_read_at_marker_sends_next_batch(h: Harness) -> None:
     assert h.bot.last(target)[1].splitlines()[-1] == "shown 4/5"
     # previous footer lost its button
     assert h.bot.edits == [(target, 4, h.bot.messages[target][1][1], None)]
+
+
+async def test_on_read_sends_next_once_90_percent_of_batch_is_read(
+    storage: Storage, tmp_path: Path
+) -> None:
+    h = Harness(storage, tmp_path, batch_size=10)
+    h.add_posts(12)
+    await h.service.run_folder(h.folders.folders[0])
+    target = h.target
+    assert len(h.user.forwarded) == 10
+    h.clock.advance(120)
+    await h.user.emit_read(target, 9)  # title=1, posts=2..11: 8 of 10 read
+    assert len(h.user.forwarded) == 10
+    await h.user.emit_read(target, 10)  # 9 of 10 read
+    assert len(h.user.forwarded) == 12
 
 
 async def test_on_read_within_interval_defers_instead_of_dropping(h: Harness) -> None:

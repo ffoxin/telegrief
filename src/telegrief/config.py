@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     window_from_h: int = Field(default=48, ge=1)
     window_to_h: int = Field(default=24, ge=0)
     auto_next_min_interval_s: int = Field(default=120, ge=0)
+    # Share of the current batch's posts that must be read before the next batch
+    # is sent automatically (1.0 = every post).
+    auto_next_read_fraction: float = Field(default=0.9, gt=0, le=1)
     max_copy_mb: int = Field(default=200, ge=0)
     data_dir: Path = Path("/app/data")
     folders_file: Path = Path("/app/config/folders.yaml")

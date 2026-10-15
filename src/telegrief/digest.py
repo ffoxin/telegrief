@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -13,7 +14,7 @@ from loguru import logger
 from .collector import Collector, window
 from .config import FolderConfig, FoldersConfig, Settings
 from .delivery import Deliverer, render_footer, render_title
-from .models import ChannelInfo, Digest, DigestStatus, ItemState
+from .models import ChannelInfo, Digest, DigestItem, DigestStatus, ItemState
 from .scoring import rank
 from .targets import TargetResolver
 from .tg.protocols import (
@@ -236,6 +237,12 @@ class DigestService:
             await self._storage.update_digest(digest)
             return len(items)
 
+    def _batch_read(self, batch: list[DigestItem], max_id: int) -> bool:
+        """True once the read marker covers the configured share of the batch's posts."""
+        seen = sum(1 for i in batch if i.sent_msg_id is not None and i.sent_msg_id <= max_id)
+        needed = math.ceil(round(self._settings.auto_next_read_fraction * len(batch), 6))
+        return seen >= max(1, needed)
+
     async def _guarded_send(self, digest_id: int, *, manual: bool) -> None:
         try:
             await self.send_batch(digest_id, manual=manual)
@@ -258,8 +265,10 @@ class DigestService:
         digest = await self._storage.open_digest_for_target(channel_id)
         if digest is None:
             return
-        last = await self._storage.max_sent_msg_id(digest.id)
-        if last is None or max_id < last:
+        if digest.last_batch_at is None:
+            return
+        batch = await self._storage.batch_items(digest.id, digest.last_batch_at)
+        if not batch or not self._batch_read(batch, max_id):
             return
         if await self._storage.count_items(digest.id, ItemState.PENDING) == 0:
             return

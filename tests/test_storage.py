@@ -135,7 +135,7 @@ async def test_pending_items_limit_and_item_updates(storage: Storage) -> None:
     )
     batch = await storage.pending_items(digest.id, limit=2)
     assert [i.rank for i in batch] == [1, 2]
-    assert await storage.max_sent_msg_id(digest.id) is None
+    assert await storage.batch_items(digest.id, NOW) == []
     batch[0].state = ItemState.SENT
     batch[0].delivery = Delivery.FORWARD
     batch[0].sent_msg_id = 77
@@ -147,7 +147,9 @@ async def test_pending_items_limit_and_item_updates(storage: Storage) -> None:
     assert await storage.count_items(digest.id, ItemState.SENT) == 1
     assert await storage.count_items(digest.id, ItemState.FAILED) == 1
     assert await storage.count_items(digest.id, ItemState.PENDING) == 3
-    assert await storage.max_sent_msg_id(digest.id) == 77
+    sent = await storage.batch_items(digest.id, NOW)
+    assert [(i.rank, i.sent_msg_id) for i in sent] == [(1, 77)]
+    assert await storage.batch_items(digest.id, NOW + timedelta(seconds=1)) == []
 
 
 async def test_update_digest(storage: Storage) -> None:

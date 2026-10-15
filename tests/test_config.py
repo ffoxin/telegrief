@@ -23,6 +23,7 @@ def test_settings_from_env(env: None) -> None:
     assert s.db_path == Path("/app/data/telegrief.db")
     assert s.heartbeat_path == Path("/app/data/heartbeat")
     assert s.folders_file == Path("/app/config/folders.yaml")
+    assert s.auto_next_read_fraction == 0.9
 
 
 def test_settings_from_secrets_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -39,6 +40,13 @@ def test_settings_from_secrets_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 def test_settings_rejects_bad_run_at(env: None) -> None:
     with pytest.raises(ValidationError):
         Settings(_secrets_dir=None, run_at="2:00")
+
+
+def test_settings_rejects_bad_read_fraction(env: None) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_secrets_dir=None, auto_next_read_fraction=0)
+    with pytest.raises(ValidationError):
+        Settings(_secrets_dir=None, auto_next_read_fraction=1.5)
 
 
 def test_settings_rejects_bad_tz(env: None) -> None:

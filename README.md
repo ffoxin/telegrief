@@ -5,8 +5,8 @@ Daily ranked digest of Telegram channel posts from your folders. Every day at
 `[now-48h, now-24h)` from every channel inside each configured Telegram folder,
 ranks them by engagement (reactions per view by default), and forwards the
 best ones into a private digest channel it creates for you. The first batch
-arrives immediately; the next batch arrives once you have read the previous
-one.
+arrives immediately; the next batch arrives once you have read most (90%)
+of the previous one.
 
 Design: `docs/superpowers/specs/2026-10-15-telegrief-design.md`.
 
@@ -48,6 +48,8 @@ Then open the bot chat and send `/folders` to verify channel detection, and
 Environment (compose `environment:` or `/run/secrets/<name>` files):
 `TG_API_ID`, `TG_API_HASH`, `BOT_TOKEN`, `TZ` (UTC), `RUN_AT` (02:00),
 `WINDOW_FROM_H` (48), `WINDOW_TO_H` (24), `AUTO_NEXT_MIN_INTERVAL_S` (120),
+`AUTO_NEXT_READ_FRACTION` (0.9, share of a batch you must read before the next
+one is sent automatically),
 `MAX_COPY_MB` (200), `LOG_LEVEL` (INFO).
 
 `config/folders.yaml`: see `config/folders.yaml.example`. Re-read on every run and

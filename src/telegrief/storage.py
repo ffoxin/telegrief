@@ -353,12 +353,16 @@ class Storage:
         )
         return int(row["n"]) if row is not None else 0
 
-    async def max_sent_msg_id(self, digest_id: int) -> int | None:
-        row = await self._fetchone(
-            "SELECT MAX(sent_msg_id) AS m FROM digest_items WHERE digest_id = ? AND state = ?",
-            (digest_id, ItemState.SENT),
+    async def batch_items(self, digest_id: int, sent_at: datetime) -> list[DigestItem]:
+        """Items sent in one batch: send_batch stamps them all with the batch time."""
+        rows = await self._fetchall(
+            """
+            SELECT * FROM digest_items WHERE digest_id = ? AND state = ? AND sent_at = ?
+            ORDER BY rank
+            """,
+            (digest_id, ItemState.SENT, _iso(sent_at)),
         )
-        return int(row["m"]) if row is not None and row["m"] is not None else None
+        return [_item_from_row(r) for r in rows]
 
     async def update_item(self, item: DigestItem) -> None:
         await self._conn.execute(
