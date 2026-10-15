@@ -12,7 +12,9 @@ services:
       - bot_token
     volumes:
       - ./.data:/app/data
-      - ./folders.yaml:/app/folders.yaml:ro
+      # Directory, not file: a single-file bind mount pins the inode and goes
+      # stale when an editor saves folders.yaml via rename.
+      - ./config:/app/config:ro
     healthcheck:
       test:
         [

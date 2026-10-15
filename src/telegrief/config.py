@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     auto_next_min_interval_s: int = Field(default=120, ge=0)
     max_copy_mb: int = Field(default=200, ge=0)
     data_dir: Path = Path("/app/data")
-    folders_file: Path = Path("/app/folders.yaml")
+    folders_file: Path = Path("/app/config/folders.yaml")
     log_level: str = "INFO"
 
     @field_validator("run_at")

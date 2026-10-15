@@ -11,5 +11,5 @@ docs
 .pytest_cache
 __pycache__
 *.session*
-folders.yaml
+config/
 docker-compose.override.yml

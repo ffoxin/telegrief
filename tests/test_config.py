@@ -22,6 +22,7 @@ def test_settings_from_env(env: None) -> None:
     assert s.max_copy_bytes == 200 * 1024 * 1024
     assert s.db_path == Path("/app/data/telegrief.db")
     assert s.heartbeat_path == Path("/app/data/heartbeat")
+    assert s.folders_file == Path("/app/config/folders.yaml")
 
 
 def test_settings_from_secrets_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
