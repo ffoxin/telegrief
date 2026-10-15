@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.superpowers/
+.data/
+secrets/
+folders.yaml
+docker-compose.override.yml
+*.session
+*.session-journal
+.env
