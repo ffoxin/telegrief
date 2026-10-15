@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
-from .config import FolderConfig, Scoring
-from .models import ChannelInfo, Post, ScoredPost
+from .models import ChannelInfo, FolderConfig, Post, ScoredPost, Scoring
 
-Strategy = Callable[[int, Post, ChannelInfo, FolderConfig], float]
+Strategy = Callable[[int, int, int, FolderConfig], float]
 
 
 def engagement(post: Post, channel: ChannelInfo) -> int:
@@ -15,16 +14,16 @@ def engagement(post: Post, channel: ChannelInfo) -> int:
     return post.reactions if channel.reactions_enabled else post.forwards
 
 
-def _raw(e: int, post: Post, channel: ChannelInfo, cfg: FolderConfig) -> float:
+def _raw(e: int, views: int, subscribers: int, cfg: FolderConfig) -> float:
     return float(e)
 
 
-def _per_subscriber(e: int, post: Post, channel: ChannelInfo, cfg: FolderConfig) -> float:
-    return e / max(channel.subscribers, cfg.min_denominator) * 1000
+def _per_subscriber(e: int, views: int, subscribers: int, cfg: FolderConfig) -> float:
+    return e / max(subscribers, cfg.min_denominator) * 1000
 
 
-def _per_view(e: int, post: Post, channel: ChannelInfo, cfg: FolderConfig) -> float:
-    return e / max(post.views, cfg.min_denominator)
+def _per_view(e: int, views: int, subscribers: int, cfg: FolderConfig) -> float:
+    return e / max(views, cfg.min_denominator)
 
 
 STRATEGIES: dict[Scoring, Strategy] = {
@@ -34,11 +33,15 @@ STRATEGIES: dict[Scoring, Strategy] = {
 }
 
 
+def score(e: int, views: int, subscribers: int, cfg: FolderConfig) -> float:
+    """Score one post from its engagement, views and the channel's subscriber count."""
+    return STRATEGIES[cfg.scoring](e, views, subscribers, cfg)
+
+
 def rank(
     posts: Iterable[Post], channels: dict[int, ChannelInfo], cfg: FolderConfig
 ) -> list[ScoredPost]:
-    """Score, drop zero-engagement posts, sort best first, cut to max_items."""
-    strategy = STRATEGIES[cfg.scoring]
+    """Score, drop zero-engagement posts, sort best first."""
     scored: list[ScoredPost] = []
     for post in posts:
         channel = channels.get(post.channel_id)
@@ -47,9 +50,9 @@ def rank(
         e = engagement(post, channel)
         if e <= 0:
             continue
-        scored.append(ScoredPost(post, channel, e, strategy(e, post, channel, cfg)))
+        scored.append(ScoredPost(post, channel, e, score(e, post.views, channel.subscribers, cfg)))
     scored.sort(key=lambda s: (-s.score, -s.engagement, s.post.date))
-    return scored[: cfg.max_items]
+    return scored
 
 
 def format_count(n: int) -> str:

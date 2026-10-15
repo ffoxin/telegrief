@@ -5,14 +5,13 @@ from __future__ import annotations
 import re
 import unicodedata
 from pathlib import Path
-from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-Scoring = Literal["raw", "per_subscriber", "per_view"]
+from .models import FolderConfig as BaseFolderConfig
 
 _RUN_AT = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
@@ -88,14 +87,12 @@ class Settings(BaseSettings):
         return self.data_dir / "bot"
 
 
-class FolderConfig(BaseModel):
+class FolderConfig(BaseFolderConfig):
+    """folders.yaml entry: the shared tuning plus a name and an optional target."""
+
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1)
-    batch_size: int = Field(default=10, ge=1)
-    scoring: Scoring = "per_view"
-    min_denominator: int = Field(default=200, ge=1)
-    max_items: int = Field(default=1000, ge=1)
     target: int | None = None
 
 

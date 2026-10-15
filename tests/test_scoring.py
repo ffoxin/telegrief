@@ -1,13 +1,13 @@
 from datetime import UTC, datetime
 
-from telegrief.config import FolderConfig
-from telegrief.models import ChannelInfo, Post
+from telegrief.models import ChannelInfo, FolderConfig, Post
 from telegrief.scoring import (
     engagement,
     format_count,
     format_engagement,
     format_score,
     rank,
+    score,
 )
 
 CH = ChannelInfo(
@@ -50,42 +50,42 @@ def test_engagement_uses_forwards_when_reactions_disabled() -> None:
 
 
 def test_per_view_applies_floor() -> None:
-    cfg = FolderConfig(name="x", scoring="per_view", min_denominator=200)
+    cfg = FolderConfig(scoring="per_view", min_denominator=200)
     [scored] = rank([post(views=50, reactions=10)], {-1001: CH}, cfg)
     assert scored.score == 10 / 200
 
 
 def test_per_view_without_floor() -> None:
-    cfg = FolderConfig(name="x", scoring="per_view", min_denominator=200)
+    cfg = FolderConfig(scoring="per_view", min_denominator=200)
     [scored] = rank([post(views=1000, reactions=41)], {-1001: CH}, cfg)
     assert scored.score == 0.041
 
 
 def test_per_subscriber() -> None:
-    cfg = FolderConfig(name="x", scoring="per_subscriber", min_denominator=200)
+    cfg = FolderConfig(scoring="per_subscriber", min_denominator=200)
     [scored] = rank([post(reactions=50)], {-1001: CH}, cfg)
     assert scored.score == 5.0  # 50 / 10_000 * 1000
 
 
 def test_raw() -> None:
-    cfg = FolderConfig(name="x", scoring="raw")
+    cfg = FolderConfig(scoring="raw")
     [scored] = rank([post(reactions=50)], {-1001: CH}, cfg)
     assert scored.score == 50.0
 
 
 def test_rank_drops_zero_engagement() -> None:
-    cfg = FolderConfig(name="x")
+    cfg = FolderConfig()
     posts = [post(1, reactions=0), post(2, reactions=1)]
     assert [s.post.msg_id for s in rank(posts, {-1001: CH}, cfg)] == [2]
 
 
 def test_rank_drops_posts_from_unknown_channels() -> None:
-    cfg = FolderConfig(name="x")
+    cfg = FolderConfig()
     assert rank([post(1, channel_id=-1099)], {-1001: CH}, cfg) == []
 
 
 def test_rank_orders_by_score_then_engagement_then_date() -> None:
-    cfg = FolderConfig(name="x", scoring="per_view", min_denominator=1)
+    cfg = FolderConfig(scoring="per_view", min_denominator=1)
     later = T0.replace(hour=13)
     posts = [
         post(1, views=1000, reactions=10),  # 0.01
@@ -96,10 +96,17 @@ def test_rank_orders_by_score_then_engagement_then_date() -> None:
     assert [s.post.msg_id for s in rank(posts, {-1001: CH}, cfg)] == [4, 3, 2, 1]
 
 
-def test_rank_truncates_to_max_items() -> None:
-    cfg = FolderConfig(name="x", max_items=2)
+def test_rank_keeps_everything() -> None:
+    cfg = FolderConfig(max_items=2)
     posts = [post(i, reactions=i) for i in range(1, 6)]
-    assert [s.post.msg_id for s in rank(posts, {-1001: CH}, cfg)] == [5, 4]
+    assert [s.post.msg_id for s in rank(posts, {-1001: CH}, cfg)] == [5, 4, 3, 2, 1]
+
+
+def test_score_matches_rank() -> None:
+    cfg = FolderConfig(scoring="per_subscriber", min_denominator=200)
+    assert score(50, 1000, 10_000, cfg) == 5.0
+    assert score(10, 50, 10_000, FolderConfig(min_denominator=200)) == 10 / 200
+    assert score(7, 1, 1, FolderConfig(scoring="raw")) == 7.0
 
 
 def test_format_count() -> None:
