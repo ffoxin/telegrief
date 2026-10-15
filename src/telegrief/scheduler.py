@@ -1,4 +1,4 @@
-"""Wiring: connect clients, build services, schedule the daily run, serve forever."""
+"""Wiring: connect clients, build services, tick the folder schedules, serve forever."""
 
 from __future__ import annotations
 
@@ -6,17 +6,15 @@ import asyncio
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
 
 from .collector import Collector
 from .commands import CommandHandler
-from .config import FoldersConfig, Settings, load_folders
+from .config import Settings
 from .delivery import Deliverer
 from .digest import DigestService
 from .storage import Storage
@@ -25,19 +23,16 @@ from .tg.bot import TelethonBot
 from .tg.user import TelethonUser
 
 HEARTBEAT_INTERVAL_S = 60
-
-
-def parse_run_at(value: str) -> tuple[int, int]:
-    hour, minute = value.split(":")
-    h, m = int(hour), int(minute)
-    if not (0 <= h <= 23 and 0 <= m <= 59):
-        raise ValueError(f"bad RUN_AT: {value}")
-    return h, m
+TICK_INTERVAL_S = 60
 
 
 def configure_logging(level: str) -> None:
     logger.remove()
     logger.add(sys.stderr, level=level.upper(), enqueue=False, backtrace=False, diagnose=False)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 class Heartbeat:
@@ -54,14 +49,60 @@ class Heartbeat:
             await asyncio.sleep(interval_s)
 
 
+def latest_slot(next_run_at: datetime, period: timedelta, now: datetime) -> datetime:
+    """Latest slot ``<= now`` on the grid ``next_run_at + k * period`` (k >= 0)."""
+    if next_run_at > now:
+        raise ValueError("not due yet")
+    return next_run_at + (now - next_run_at) // period * period
+
+
+class Ticker:
+    """Every ``interval_s``: fetch each due folder, windowed on its latest complete slot.
+
+    ``next_run_at`` moves to the slot after the one fetched, whether the fetch succeeded
+    or not, so older missed slots are skipped and a broken folder retries next period.
+    """
+
+    def __init__(
+        self,
+        storage: Storage,
+        service: DigestService,
+        clock: Callable[[], datetime] = _utcnow,
+        interval_s: float = TICK_INTERVAL_S,
+    ) -> None:
+        self._storage = storage
+        self._service = service
+        self._clock = clock
+        self._interval = interval_s
+
+    async def tick(self) -> list[str]:
+        now = self._clock()
+        results: list[str] = []
+        for folder in await self._storage.due_folders(now):
+            period = timedelta(hours=folder.config.period_h)
+            slot = latest_slot(folder.next_run_at, period, now)
+            try:
+                results.append(await self._service.fetch(folder.id, at=slot, scheduled=True))
+            except Exception:
+                logger.exception("folder {}: scheduled fetch crashed", folder.name)
+            finally:
+                await self._storage.set_next_run(folder.id, slot + period)
+        return results
+
+    async def run(self) -> None:
+        while True:
+            try:
+                await self.tick()
+            except Exception:
+                logger.exception("tick failed")
+            await asyncio.sleep(self._interval)
+
+
 @dataclass
 class App:
     service: DigestService
     commands: CommandHandler
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
+    ticker: Ticker
 
 
 def build_app(
@@ -71,10 +112,6 @@ def build_app(
     storage: Storage,
     on_fatal: Callable[[Exception], None] | None = None,
 ) -> App:
-    def folders() -> FoldersConfig:
-        return load_folders(settings.folders_file)
-
-    folders()  # fail fast on a broken folders.yaml
     user.bot_username = bot.username
     collector = Collector(user, storage)
     targets = TargetResolver(user, storage, bot.username)
@@ -87,12 +124,13 @@ def build_app(
         targets=targets,
         deliverer=deliverer,
         settings=settings,
-        folders=folders,
         clock=_utcnow,
         on_fatal=on_fatal,
     )
-    commands = CommandHandler(service, user, storage, collector, targets, folders, _utcnow)
-    return App(service=service, commands=commands)
+    commands = CommandHandler(
+        service, user, storage, collector, targets, ZoneInfo(settings.tz), _utcnow
+    )
+    return App(service=service, commands=commands, ticker=Ticker(storage, service, _utcnow))
 
 
 async def _connect(settings: Settings) -> tuple[TelethonUser, TelethonBot, Storage]:
@@ -119,11 +157,11 @@ async def run_once(
     try:
         app = build_app(settings, user, bot, storage)
         if folder is None:
-            return await app.service.run_all(from_h, to_h)
-        cfg = load_folders(settings.folders_file).get(folder)
-        if cfg is None:
+            return await app.service.fetch_all(from_h, to_h)
+        found = await storage.find_folder(folder)
+        if found is None:
             return [f"unknown folder: {folder}"]
-        return [await app.service.run_folder(cfg, from_h, to_h)]
+        return [await app.service.fetch(found.id, from_h=from_h, to_h=to_h)]
     finally:
         await bot.disconnect()
         await user.disconnect()
@@ -145,27 +183,10 @@ async def serve(settings: Settings) -> None:
     bot.on_owner_command(app.commands.handle)
     await user.ping_bot(bot.username)
     await app.service.catch_up()
-
-    async def daily() -> None:
-        try:
-            await app.service.run_all()
-        except Exception as exc:
-            logger.exception("daily run failed")
-            await bot.send_owner(f"❌ daily run failed: {exc}")
-
-    hour, minute = parse_run_at(settings.run_at)
-    tz = ZoneInfo(settings.tz)
-    scheduler = AsyncIOScheduler(timezone=tz)
-    scheduler.add_job(
-        daily,
-        CronTrigger(hour=hour, minute=minute, timezone=tz),
-        id="daily",
-        misfire_grace_time=3600,
-    )
-    scheduler.start()
-    logger.info("serving; daily run at {} {}", settings.run_at, settings.tz)
+    logger.info("serving; folder schedules checked every {}s", TICK_INTERVAL_S)
     tasks = [
         asyncio.create_task(Heartbeat(settings.heartbeat_path).run(), name="heartbeat"),
+        asyncio.create_task(app.ticker.run(), name="ticker"),
         asyncio.create_task(user.run_until_disconnected(), name="user"),
         asyncio.create_task(bot.run_until_disconnected(), name="bot"),
         asyncio.create_task(stop.wait(), name="fatal"),
@@ -182,5 +203,4 @@ async def serve(settings: Settings) -> None:
         await bot.send_owner(f"💀 telegrief stopped: {reason}")
         raise SystemExit(1)
     finally:
-        scheduler.shutdown(wait=False)
         await storage.close()

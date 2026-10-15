@@ -12,7 +12,7 @@ from .config import load_settings
 @click.group(invoke_without_command=True)
 @click.pass_context
 def main(ctx: click.Context) -> None:
-    """telegrief — daily ranked digest of Telegram channel posts."""
+    """telegrief — ranked queue of Telegram channel posts from your folders."""
     if ctx.invoked_subcommand is None:
         ctx.invoke(serve)
 
