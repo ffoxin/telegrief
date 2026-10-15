@@ -1,15 +1,17 @@
-"""Owner-only bot commands: /run, /status, /folders, /reset."""
+"""Owner-only bot commands: /folder, /folders, /run, /status, /reset."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
+
+from pydantic import ValidationError
 
 from .collector import Collector, digest_targets
-from .config import FoldersConfig
 from .digest import DigestService
-from .models import ItemState
+from .models import Folder, FolderConfig
 from .scoring import format_count
 from .targets import TargetResolver
 from .tg.protocols import FolderNotFound, UserGateway
@@ -18,11 +20,29 @@ if TYPE_CHECKING:
     from .storage import Storage
 
 USAGE = (
-    "/run [folder] [from_h] [to_h] — run now (defaults: 48 24)\n"
-    "/status — open digests\n"
-    "/folders — channels resolved per folder\n"
-    "/reset <folder> — forget digest channel mapping"
+    "/folder <name> [key=value ...] — add or update a folder; keys: min_age, period, batch, "
+    "scoring, min_denominator, max_items, max_age, target, next\n"
+    "/folder <name> off — remove a folder (digest channel kept)\n"
+    "/folders — folders, settings, resolved channels\n"
+    "/run [folder] [from_h] [to_h] — fetch now\n"
+    "/status — queue per folder\n"
+    "/reset <folder> — forget the digest channel"
 )
+NO_FOLDERS = "no folders configured; /folder <name> adds one"
+
+# /folder key -> FolderConfig field
+CONFIG_KEYS = {
+    "min_age": "min_age_h",
+    "period": "period_h",
+    "batch": "batch_size",
+    "scoring": "scoring",
+    "min_denominator": "min_denominator",
+    "max_items": "max_items",
+    "max_age": "max_age_d",
+}
+ACTION_KEYS = frozenset({"target", "next"})
+UNITS = {"min_age": "h", "period": "h", "max_age": "d"}
+TIME_FMT = "%Y-%m-%d %H:%M"
 
 
 def parse_run_args(args: list[str]) -> tuple[str | None, int | None, int | None]:
@@ -37,6 +57,86 @@ def parse_run_args(args: list[str]) -> tuple[str | None, int | None, int | None]
     return folder, from_h, to_h
 
 
+def parse_folder_args(args: list[str]) -> tuple[str, dict[str, str], bool]:
+    """Split ``/folder`` arguments into (name, key=value pairs, off flag).
+
+    The name is every word before the first ``key=value``; a trailing ``off`` with no
+    pairs removes the folder. Raises ValueError on bad syntax.
+    """
+    words = list(args)
+    name_words: list[str] = []
+    while words and "=" not in words[0]:
+        name_words.append(words.pop(0))
+    pairs: dict[str, str] = {}
+    for word in words:
+        key, _, value = word.partition("=")
+        if not key or not value:
+            raise ValueError(f"expected key=value, got {word}")
+        pairs[key] = value
+    off = False
+    if len(name_words) > 1 and name_words[-1] == "off":
+        if pairs:
+            raise ValueError("off takes no settings")
+        off = True
+        name_words.pop()
+    name = " ".join(name_words)
+    if not name:
+        raise ValueError("folder name required")
+    if name == "off":
+        raise ValueError("'off' is reserved")
+    return name, pairs, off
+
+
+def apply_pairs(base: FolderConfig, pairs: dict[str, str]) -> FolderConfig:
+    """``base`` with ``pairs`` applied; ValueError names an unknown key or the first bad value."""
+    unknown = sorted(set(pairs) - set(CONFIG_KEYS))
+    if unknown:
+        raise ValueError(f"unknown key: {', '.join(unknown)}")
+    data = base.model_dump()
+    data.update({CONFIG_KEYS[key]: value for key, value in pairs.items()})
+    try:
+        return FolderConfig.model_validate(data)
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        field = ".".join(str(part) for part in first["loc"]) or "config"
+        raise ValueError(f"{field}: {first['msg']}") from exc
+
+
+def parse_target(value: str) -> int:
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"target: expected a channel id, got {value}") from exc
+
+
+def next_occurrence(value: str, now: datetime, tz: ZoneInfo) -> datetime:
+    """``now`` itself, or the next wall-clock ``HH:MM`` in ``tz`` strictly after now."""
+    if value == "now":
+        return now
+    try:
+        at = time.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"next: expected HH:MM or now, got {value}") from exc
+    local = now.astimezone(tz)
+    candidate = datetime.combine(local.date(), at, tzinfo=tz)
+    if candidate <= local:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(UTC)
+
+
+def fmt(dt: datetime, tz: ZoneInfo) -> str:
+    return dt.astimezone(tz).strftime(TIME_FMT)
+
+
+def describe(folder: Folder, pending: int, tz: ZoneInfo) -> str:
+    cfg = folder.config
+    return (
+        f"{folder.name} · {cfg.min_age_h}/{cfg.period_h}h · batch {cfg.batch_size} · "
+        f"{cfg.scoring}/{cfg.min_denominator} · max {cfg.max_items} · {cfg.max_age_d}d · "
+        f"queued {pending} · next {fmt(folder.next_run_at, tz)}"
+    )
+
+
 class CommandHandler:
     def __init__(
         self,
@@ -45,7 +145,7 @@ class CommandHandler:
         storage: Storage,
         collector: Collector,
         targets: TargetResolver,
-        folders: Callable[[], FoldersConfig],
+        tz: ZoneInfo,
         clock: Callable[[], datetime],
     ) -> None:
         self._service = service
@@ -53,58 +153,150 @@ class CommandHandler:
         self._storage = storage
         self._collector = collector
         self._targets = targets
-        self._folders = folders
+        self._tz = tz
         self._clock = clock
 
     async def handle(self, command: str, args: list[str]) -> str:
+        if command == "folder":
+            return await self._folder(args)
+        if command == "folders":
+            return await self._list_folders()
         if command == "run":
             return await self._run(args)
         if command == "status":
             return await self._status()
-        if command == "folders":
-            return await self._list_folders()
         if command == "reset":
             return await self._reset(args)
         return USAGE
 
+    # ---- /folder -------------------------------------------------------------
+
+    async def _folder(self, args: list[str]) -> str:
+        try:
+            name, pairs, off = parse_folder_args(args)
+        except ValueError as exc:
+            return f"❌ {exc}"
+        folder = await self._storage.find_folder(name)
+        if off:
+            if folder is None:
+                return f"unknown folder: {name}"
+            await self._storage.delete_folder(folder.id)
+            return f"✅ {folder.name} removed; digest channel kept"
+        settings = {k: v for k, v in pairs.items() if k not in ACTION_KEYS}
+        now = self._clock()
+        try:
+            cfg = apply_pairs(folder.config if folder is not None else FolderConfig(), settings)
+            target = parse_target(pairs["target"]) if "target" in pairs else None
+            next_run = next_occurrence(pairs["next"], now, self._tz) if "next" in pairs else None
+        except ValueError as exc:
+            return f"❌ {exc}"
+        if target is not None:
+            owner = await self._storage.folder_for_target(target)
+            if owner is not None and (folder is None or owner.id != folder.id):
+                return f"❌ channel {target} is already the digest channel of {owner.name}"
+        if folder is None:
+            return await self._create(name, cfg, target, next_run, now)
+        if not pairs:
+            return describe(folder, await self._storage.count_pending(folder.id), self._tz)
+        if cfg != folder.config:
+            await self._storage.update_folder_config(folder.id, cfg)
+            if (cfg.scoring, cfg.min_denominator) != (
+                folder.config.scoring,
+                folder.config.min_denominator,
+            ):
+                await self._service.rescore(folder.id)
+        if target is not None:
+            await self._storage.set_target(folder.name, target, now)
+        if next_run is not None:
+            await self._storage.set_next_run(folder.id, next_run)
+        changes = [
+            f"{key} {fmt(next_run, self._tz) if key == 'next' and next_run else value}"
+            f"{UNITS.get(key, '')}"
+            for key, value in pairs.items()
+        ]
+        return f"✅ {folder.name}: {', '.join(changes)}"
+
+    async def _create(
+        self,
+        name: str,
+        cfg: FolderConfig,
+        target: int | None,
+        next_run: datetime | None,
+        now: datetime,
+    ) -> str:
+        folder = await self._storage.create_folder(name, cfg, now)
+        if target is not None:
+            await self._storage.set_target(folder.name, target, now)
+        if next_run is not None:
+            await self._storage.set_next_run(folder.id, next_run)
+        when = f"at {fmt(next_run, self._tz)}" if next_run is not None else "within a minute"
+        return (
+            f"✅ {folder.name}: every {cfg.period_h}h, posts "
+            f"{cfg.min_age_h}–{cfg.min_age_h + cfg.period_h}h old, first fetch {when}"
+        )
+
+    # ---- the rest ------------------------------------------------------------
+
     async def _run(self, args: list[str]) -> str:
-        folder, from_h, to_h = parse_run_args(args)
+        name, from_h, to_h = parse_run_args(args)
         if from_h is not None and to_h is not None and from_h <= to_h:
             return "from_h must be greater than to_h"
+        if name is None:
+            folders = await self._storage.list_folders()
+            if not folders:
+                return NO_FOLDERS
+            return "\n".join(
+                [await self._service.fetch(f.id, from_h=from_h, to_h=to_h) for f in folders]
+            )
+        folder = await self._storage.find_folder(name)
         if folder is None:
-            return "\n".join(await self._service.run_all(from_h, to_h))
-        cfg = self._folders().get(folder)
-        if cfg is None:
-            return f"unknown folder: {folder}"
-        return await self._service.run_folder(cfg, from_h, to_h)
+            return f"unknown folder: {name}"
+        return await self._service.fetch(folder.id, from_h=from_h, to_h=to_h)
 
     async def _status(self) -> str:
+        folders = await self._storage.list_folders()
+        if not folders:
+            return NO_FOLDERS
         lines: list[str] = []
-        for cfg in self._folders().folders:
-            digest = await self._storage.latest_digest(cfg.name)
-            if digest is None:
-                lines.append(f"{cfg.name}: none")
-                continue
-            sent = await self._storage.count_items(digest.id, ItemState.SENT)
-            pending = await self._storage.count_items(digest.id, ItemState.PENDING)
-            lines.append(
-                f"{cfg.name}: {digest.window_end:%Y-%m-%d} · {digest.status} · "
-                f"shown {sent}/{digest.total} · pending {pending}"
+        for folder in folders:
+            pending = await self._storage.count_pending(folder.id)
+            fetched = (
+                f"fetched {fmt(folder.last_fetch_at, self._tz)}"
+                if folder.last_fetch_at is not None
+                else "never fetched"
             )
+            if folder.fetch_added:
+                fetched += f" (+{folder.fetch_added} new)"
+            batch = (
+                f"batch {fmt(folder.last_batch_at, self._tz)}"
+                if folder.last_batch_at is not None
+                else "no batch yet"
+            )
+            line = (
+                f"{folder.name}: {fetched} · queued {pending} · {batch} · "
+                f"next {fmt(folder.next_run_at, self._tz)}"
+            )
+            if folder.last_error:
+                line += f" · ⚠️ {folder.last_error}"
+            lines.append(line)
         return "\n".join(lines)
 
     async def _list_folders(self) -> str:
         now = self._clock()
         titles = await self._user.list_folder_titles()
         lines: list[str] = [f"Telegram folders: {' · '.join(titles) or '(none)'}"]
-        exclude = await digest_targets(self._storage, self._folders())
-        for cfg in self._folders().folders:
+        folders = await self._storage.list_folders()
+        if not folders:
+            lines.append(NO_FOLDERS)
+            return "\n".join(lines)
+        exclude = await digest_targets(self._storage)
+        for folder in folders:
+            lines.append(describe(folder, await self._storage.count_pending(folder.id), self._tz))
             try:
-                channel_ids = await self._collector.source_channels(cfg.name, exclude)
+                channel_ids = await self._collector.source_channels(folder.name, exclude)
             except FolderNotFound:
-                lines.append(f"{cfg.name}: ❌ folder not found")
+                lines.append("  ❌ folder not found")
                 continue
-            lines.append(f"{cfg.name} ({len(channel_ids)}):")
             for channel_id in channel_ids:
                 try:
                     info = await self._collector.channel_info(channel_id, now)
@@ -115,23 +307,23 @@ class CommandHandler:
         return "\n".join(lines)
 
     async def _reset(self, args: list[str]) -> str:
-        folder = " ".join(args)
-        if not folder:
+        name = " ".join(args)
+        if not name:
             return USAGE
-        cfg = self._folders().get(folder)
-        if cfg is not None:
-            folder = cfg.name
-        result = await self._targets.reset(folder)
+        folder = await self._storage.find_folder(name)
+        if folder is not None:
+            name = folder.name
+        result = await self._targets.reset(name)
         if result is None:
-            return f"no digest channel mapping for {folder}"
+            return f"no digest channel mapping for {name}"
         if result.error is not None:
             return (
-                f"reset {folder}; ⚠️ old digest channel {result.channel_id} still in the folder "
+                f"reset {name}; ⚠️ old digest channel {result.channel_id} still in the folder "
                 f"({result.error}); remove it by hand; next run creates a new one"
             )
         if result.removed_from_folder:
             return (
-                f"reset {folder}; old digest channel removed from the folder; "
+                f"reset {name}; old digest channel removed from the folder; "
                 "next run creates a new one"
             )
-        return f"reset {folder}; next run creates a new one"
+        return f"reset {name}; next run creates a new one"
