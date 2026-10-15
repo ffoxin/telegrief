@@ -59,7 +59,9 @@ case and extra spaces, so `name: mem` finds the folder `😊mEm`; `/folders` pri
 the titles the service sees. Bot commands accept the same loose form
 (`/run mem`). The auto-created digest channel is titled after the real Telegram
 folder title with emoji removed (`mEm · digest`); rename it freely, the
-service only remembers its id.
+service only remembers its id. The service adds that channel to the source
+folder and pins it at the top (once; unpin by hand if you like), and never
+reads digest channels as sources even though they sit in the folder.
 
 ## Development
 

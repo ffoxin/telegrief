@@ -6,7 +6,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from .collector import Collector
+from .collector import Collector, digest_targets
 from .config import FoldersConfig
 from .digest import DigestService
 from .models import ItemState
@@ -97,9 +97,10 @@ class CommandHandler:
         now = self._clock()
         titles = await self._user.list_folder_titles()
         lines: list[str] = [f"Telegram folders: {' · '.join(titles) or '(none)'}"]
+        exclude = await digest_targets(self._storage, self._folders())
         for cfg in self._folders().folders:
             try:
-                channel_ids = await self._user.folder_channels(cfg.name)
+                channel_ids = await self._collector.source_channels(cfg.name, exclude)
             except FolderNotFound:
                 lines.append(f"{cfg.name}: ❌ folder not found")
                 continue

@@ -9,6 +9,7 @@ from telegrief.config import normalize_title
 from telegrief.tg.protocols import PING_TEXT, FolderNotFound
 from telegrief.tg.user import (
     TelethonUser,
+    add_pinned_peer,
     channel_peer_ids,
     compose_caption,
     filter_title,
@@ -161,3 +162,15 @@ async def test_ping_bot_sends_ping_text(tmp_path: Path) -> None:
     user = TelethonUser(_Client(), 1, tmp_path)  # type: ignore[arg-type]
     await user.ping_bot("telegrief_bot")
     assert sent == [("telegrief_bot", PING_TEXT)]
+
+
+def test_add_pinned_peer_prepends_once() -> None:
+    old = types.InputPeerChannel(1, 11)
+    new = types.InputPeerChannel(2, 22)
+    dialog_filter = SimpleNamespace(pinned_peers=[old], include_peers=[old, types.InputPeerSelf()])
+    assert add_pinned_peer(dialog_filter, new) is True
+    assert dialog_filter.pinned_peers == [new, old]
+    assert dialog_filter.include_peers == [new, old, types.InputPeerSelf()]
+    assert add_pinned_peer(dialog_filter, types.InputPeerChannel(2, 99)) is False
+    assert add_pinned_peer(dialog_filter, old) is False
+    assert len(dialog_filter.pinned_peers) == 2

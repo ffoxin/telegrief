@@ -12,6 +12,7 @@ from telegrief.tg.protocols import (
     CopyFailed,
     FolderNotFound,
     ForwardRestricted,
+    GatewayError,
     MediaTooLarge,
     NextHandler,
     ReadHandler,
@@ -41,6 +42,8 @@ class FakeUser:
         self.forwarded: list[tuple[int, list[int]]] = []
         self.copied: list[tuple[int, list[int], str]] = []
         self.created: list[tuple[str, str]] = []
+        self.folder_pins: list[tuple[str, int]] = []
+        self.fail_pin = False
         self.pinged: list[str] = []
         self.channel_info_calls = 0
         self._next_relay_id = 1000
@@ -80,6 +83,18 @@ class FakeUser:
     ) -> AsyncIterator[RawPost]:
         for post in self.posts.get(channel_id, []):
             yield post
+
+    async def ensure_in_folder(self, folder_name: str, channel_id: int) -> bool:
+        self._check_alive()
+        if self.fail_pin:
+            raise GatewayError("FILTER_INCLUDE_TOO_MUCH")
+        if folder_name not in self.folders:
+            raise FolderNotFound(folder_name)
+        if channel_id in self.folders[folder_name]:
+            return False
+        self.folders[folder_name].insert(0, channel_id)
+        self.folder_pins.append((folder_name, channel_id))
+        return True
 
     async def create_digest_channel(self, title: str, bot_username: str) -> int:
         self._next_channel_id -= 1

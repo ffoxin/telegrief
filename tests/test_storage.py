@@ -128,6 +128,13 @@ async def test_create_digest_closes_older_open_digest_for_same_target(storage: S
     assert await storage.latest_digest("Nope") is None
 
 
+async def test_all_target_ids(storage: Storage) -> None:
+    assert await storage.all_target_ids() == []
+    await storage.set_target("Memes", -1009, NOW)
+    await storage.set_target("News", -1008, NOW)
+    assert sorted(await storage.all_target_ids()) == [-1009, -1008]
+
+
 async def test_pending_items_limit_and_item_updates(storage: Storage) -> None:
     start, end = NOW - timedelta(hours=48), NOW - timedelta(hours=24)
     digest = await storage.create_digest(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
@@ -12,6 +13,7 @@ from .models import ChannelInfo, Post, RawPost
 from .tg.protocols import ChannelUnavailable, SessionDead, UserGateway
 
 if TYPE_CHECKING:
+    from .config import FoldersConfig
     from .storage import Storage
 
 CACHE_TTL = timedelta(hours=24)
@@ -55,6 +57,13 @@ class Collected:
     errors: list[str] = field(default_factory=list)
 
 
+async def digest_targets(storage: Storage, folders: FoldersConfig) -> set[int]:
+    """Every channel that receives digests: stored mappings plus yaml `target` overrides."""
+    ids = set(await storage.all_target_ids())
+    ids.update(f.target for f in folders.folders if f.target is not None)
+    return ids
+
+
 class Collector:
     def __init__(
         self, user: UserGateway, storage: Storage, cache_ttl: timedelta = CACHE_TTL
@@ -71,11 +80,20 @@ class Collector:
         await self._storage.upsert_channel(info, now)
         return info
 
+    async def source_channels(self, folder: str, exclude: Collection[int]) -> list[int]:
+        """Channels in the folder minus digest targets (a digest is never its own source)."""
+        return [c for c in await self._user.folder_channels(folder) if c not in exclude]
+
     async def collect(
-        self, folder: str, start: datetime, end: datetime, now: datetime
+        self,
+        folder: str,
+        start: datetime,
+        end: datetime,
+        now: datetime,
+        exclude: Collection[int] = (),
     ) -> Collected:
         result = Collected()
-        for channel_id in await self._user.folder_channels(folder):
+        for channel_id in await self.source_channels(folder, exclude):
             try:
                 info = await self.channel_info(channel_id, now)
                 raw = [

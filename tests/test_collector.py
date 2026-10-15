@@ -1,10 +1,12 @@
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from telegrief.collector import Collector, group_albums, window
+from telegrief.collector import Collector, digest_targets, group_albums, window
+from telegrief.config import FolderConfig, FoldersConfig
 from telegrief.models import ChannelInfo, RawPost
 from telegrief.storage import Storage
 from telegrief.tg.protocols import FolderNotFound
@@ -158,3 +160,45 @@ async def test_collect_skips_channel_on_unexpected_error(storage: Storage) -> No
     result = await Collector(user, storage).collect("Memes", START, END, NOW)
     assert [p.msg_id for p in result.posts] == [1]
     assert result.errors == ["-1002: boom"]
+
+
+async def test_digest_targets_from_storage_and_yaml(storage: Storage) -> None:
+    await storage.set_target("Memes", -1009, NOW)
+    folders = FoldersConfig(
+        folders=[FolderConfig(name="Memes"), FolderConfig(name="News", target=-1008)]
+    )
+    assert await digest_targets(storage, folders) == {-1009, -1008}
+
+
+async def test_collect_skips_digest_channels_sitting_in_the_folder(storage: Storage) -> None:
+    user = FakeUser()
+    digest_id = -1009
+    user.folders["Memes"] = [digest_id, CH_ID]
+    user.channels[CH_ID] = CH
+    user.channels[digest_id] = ChannelInfo(
+        id=digest_id,
+        username=None,
+        title="Memes · digest",
+        subscribers=1,
+        reactions_enabled=True,
+        noforwards=False,
+    )
+    post = RawPost(
+        channel_id=CH_ID,
+        msg_id=1,
+        grouped_id=None,
+        date=START + timedelta(hours=1),
+        views=100,
+        forwards=0,
+        reactions=5,
+        replies=0,
+        preview="p",
+        noforwards=False,
+    )
+    user.posts[CH_ID] = [post]
+    user.posts[digest_id] = [replace(post, channel_id=digest_id)]
+    collector = Collector(user, storage)
+    assert await collector.source_channels("Memes", {digest_id}) == [CH_ID]
+    result = await collector.collect("Memes", START, END, NOW, exclude={digest_id})
+    assert {p.channel_id for p in result.posts} == {CH_ID}
+    assert result.errors == []

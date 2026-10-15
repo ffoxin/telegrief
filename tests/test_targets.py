@@ -71,3 +71,44 @@ async def test_created_channel_falls_back_to_yaml_name_for_emoji_only_title(
     resolver = TargetResolver(user, storage, "telegrief_bot")
     await resolver.resolve(FolderConfig(name="Memes"), NOW)
     assert user.created == [("Memes · digest", "telegrief_bot")]
+
+
+async def test_resolve_pins_new_channel_in_its_folder(storage: Storage) -> None:
+    user = FakeUser()
+    user.folders["Memes"] = [-1001]
+    resolver = TargetResolver(user, storage, "telegrief_bot")
+    channel_id = await resolver.resolve(FolderConfig(name="Memes"), NOW)
+    assert user.folder_pins == [("Memes", channel_id)]
+    assert user.folders["Memes"] == [channel_id, -1001]
+
+
+async def test_resolve_adds_existing_channel_to_folder_only_when_missing(
+    storage: Storage,
+) -> None:
+    user = FakeUser()
+    user.folders["Memes"] = []
+    resolver = TargetResolver(user, storage, "telegrief_bot")
+    cfg = FolderConfig(name="Memes")
+    channel_id = await resolver.resolve(cfg, NOW)
+    await resolver.resolve(cfg, NOW)
+    assert user.folder_pins == [("Memes", channel_id)]  # already there: untouched
+    user.folders["Memes"].remove(channel_id)  # user removed it, or mapping predates pinning
+    await resolver.resolve(cfg, NOW)
+    assert user.folder_pins == [("Memes", channel_id), ("Memes", channel_id)]
+
+
+async def test_resolve_does_not_touch_folder_for_yaml_target(storage: Storage) -> None:
+    user = FakeUser()
+    user.folders["Memes"] = []
+    resolver = TargetResolver(user, storage, "telegrief_bot")
+    await resolver.resolve(FolderConfig(name="Memes", target=-100777), NOW)
+    assert user.folder_pins == []
+
+
+async def test_resolve_survives_folder_update_failure(storage: Storage) -> None:
+    user = FakeUser()
+    user.folders["Memes"] = []
+    user.fail_pin = True
+    resolver = TargetResolver(user, storage, "telegrief_bot")
+    channel_id = await resolver.resolve(FolderConfig(name="Memes"), NOW)
+    assert channel_id == await storage.get_target("Memes")

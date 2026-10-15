@@ -142,6 +142,13 @@ async def test_folders_lists_resolved_channels(h: Harness) -> None:
     )
 
 
+async def test_folders_hides_digest_channel_added_to_the_folder(h: Harness) -> None:
+    await h.bot.command("run", ["Memes"])
+    assert h.user.folder_pins and h.user.folder_pins[0][0] == "Memes"
+    text = await h.bot.command("folders", [])
+    assert "Memes (1):" in text
+
+
 async def test_folders_reports_missing_folder(h: Harness) -> None:
     del h.user.folders["My News"]
     text = await h.bot.command("folders", [])

@@ -31,6 +31,7 @@ from .protocols import (
     CopyFailed,
     FolderNotFound,
     ForwardRestricted,
+    GatewayError,
     MediaTooLarge,
     ReadHandler,
     SessionDead,
@@ -68,6 +69,21 @@ def _translate_fatal[**P, R](
 def filter_title(dialog_filter: Any) -> str:
     title = getattr(dialog_filter, "title", "")
     return str(getattr(title, "text", title))
+
+
+def add_pinned_peer(dialog_filter: Any, peer: Any) -> bool:
+    """Prepend ``peer`` to the folder's pinned and included peers.
+
+    Returns False when the channel is already in the folder (pinned or included).
+    """
+    peer_id = utils.get_peer_id(peer)
+    present = set(channel_peer_ids(dialog_filter.pinned_peers))
+    present.update(channel_peer_ids(dialog_filter.include_peers))
+    if peer_id in present:
+        return False
+    dialog_filter.pinned_peers.insert(0, peer)
+    dialog_filter.include_peers.insert(0, peer)
+    return True
 
 
 def match_folder(filters: Iterable[Any], folder_name: str) -> Any:
@@ -266,6 +282,22 @@ class TelethonUser:
             raise ChannelUnavailable(str(exc)) from exc
 
     # ---- digest channel ------------------------------------------------------
+
+    @_translate_fatal
+    async def ensure_in_folder(self, folder_name: str, channel_id: int) -> bool:
+        dialog_filter = match_folder(await self._dialog_filters(), folder_name)
+        peer = await self._client.get_input_entity(channel_id)
+        if not add_pinned_peer(dialog_filter, peer):
+            return False
+        try:
+            await self._client(
+                functions.messages.UpdateDialogFilterRequest(
+                    id=dialog_filter.id, filter=dialog_filter
+                )
+            )
+        except RPCError as exc:
+            raise GatewayError(f"cannot update folder {folder_name!r}: {exc}") from exc
+        return True
 
     @_translate_fatal
     async def create_digest_channel(self, title: str, bot_username: str) -> int:

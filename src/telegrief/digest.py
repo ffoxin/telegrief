@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from loguru import logger
 
-from .collector import Collector, window
+from .collector import Collector, digest_targets, window
 from .config import FolderConfig, FoldersConfig, Settings
 from .delivery import Deliverer, render_footer, render_title
 from .models import ChannelInfo, Digest, DigestItem, DigestStatus, ItemState
@@ -122,7 +122,8 @@ class DigestService:
         self, cfg: FolderConfig, now: datetime, start: datetime, end: datetime
     ) -> tuple[Digest, list[str]]:
         target = await self._targets.resolve(cfg, now)
-        collected = await self._collector.collect(cfg.name, start, end, now)
+        exclude = await digest_targets(self._storage, self._folders())
+        collected = await self._collector.collect(cfg.name, start, end, now, exclude=exclude)
         scored = rank(collected.posts, collected.channels, cfg)
         digest = await self._storage.create_digest(cfg.name, target, start, end, scored, now)
         day = end.astimezone(ZoneInfo(self._settings.tz)).date()

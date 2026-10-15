@@ -125,6 +125,7 @@ async def test_run_folder_creates_digest_and_sends_first_batch(h: Harness) -> No
     assert result == "✅ Memes: 5 posts"
     assert h.user.created == [("Memes · digest", "telegrief_bot")]
     target = h.target
+    assert h.user.folder_pins == [("Memes", target)]
     texts = h.bot.texts(target)
     assert texts[0] == "📂 Memes · 2026-10-14 · 5 posts from 1 channels"
     assert h.user.forwarded == [(CH_ID, [1]), (CH_ID, [2])]

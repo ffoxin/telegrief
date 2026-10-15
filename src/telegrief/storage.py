@@ -216,6 +216,10 @@ class Storage:
         )
         await self._conn.commit()
 
+    async def all_target_ids(self) -> list[int]:
+        rows = await self._fetchall("SELECT channel_id FROM targets")
+        return [int(r["channel_id"]) for r in rows]
+
     async def delete_target(self, folder: str) -> bool:
         cur = await self._conn.execute("DELETE FROM targets WHERE folder = ?", (folder,))
         await self._conn.commit()
