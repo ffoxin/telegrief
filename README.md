@@ -79,11 +79,12 @@ the repo and the image and restarts the service (`deploy.sh`). One-time setup:
 
    ```bash
    ssh-keygen -t ed25519 -N "" -C telegrief-deploy -f deploy_key
-   echo 'command="cd /home/vps/services/telegrief && git pull --ff-only --quiet && exec ./deploy.sh",restrict '"$(cat deploy_key.pub)" \
+   echo 'command="cd /path/to/telegrief && git pull --ff-only --quiet && exec ./deploy.sh",restrict '"$(cat deploy_key.pub)" \
      | ssh server 'cat >> ~/.ssh/authorized_keys'
    ```
 
-3. In the GitHub repo: secret `DEPLOY_SSH_KEY` (contents of `deploy_key`) and
-   variables `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_KNOWN_HOSTS`
-   (`ssh-keyscan -t ed25519 <host>` output, verified against a trusted
-   `known_hosts`). Delete the local `deploy_key` afterwards.
+3. In the GitHub repo, three secrets (secrets are masked in the public job
+   log, variables are not): `DEPLOY_SSH_KEY` (contents of `deploy_key`),
+   `DEPLOY_TARGET` (`user@host`), `DEPLOY_KNOWN_HOSTS` (`ssh-keyscan -t ed25519
+   <host>` output, verified against a trusted `known_hosts`). Delete the local
+   `deploy_key` afterwards.
