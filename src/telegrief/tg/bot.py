@@ -164,6 +164,9 @@ class TelethonBot:
 
     def on_next_button(self, handler: NextHandler) -> None:
         async def _on_callback(event: Any) -> None:
+            if event.sender_id != self._owner_id:
+                await event.answer("not for you")
+                return
             digest_id = parse_callback(event.data)
             await event.answer()
             if digest_id is not None:

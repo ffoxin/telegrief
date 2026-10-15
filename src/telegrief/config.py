@@ -114,3 +114,8 @@ class FoldersConfig(BaseModel):
 def load_folders(path: Path) -> FoldersConfig:
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return FoldersConfig.model_validate(data)
+
+
+def load_settings() -> Settings:
+    """Build Settings from env / secrets; required fields come from the environment."""
+    return Settings()  # type: ignore[call-arg]
