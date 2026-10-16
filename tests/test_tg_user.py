@@ -112,6 +112,13 @@ def test_raw_post_from_message_maps_fields() -> None:
     assert post.noforwards is False
 
 
+def test_raw_post_from_message_keeps_full_text() -> None:
+    post = raw_post_from_message(message(), -1001)
+    assert post is not None
+    assert post.text == "line one line two " + "x" * 100
+    assert post.preview == post.text[:80]
+
+
 def test_raw_post_from_message_handles_missing_counters() -> None:
     post = raw_post_from_message(
         message(views=None, forwards=None, reactions=None, replies=None, message=None), -1001

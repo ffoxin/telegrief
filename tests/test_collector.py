@@ -29,6 +29,7 @@ def raw(
     forwards: int = 0,
     reactions: int = 5,
     preview: str = "",
+    text: str = "",
     noforwards: bool = False,
 ) -> RawPost:
     return RawPost(
@@ -41,6 +42,7 @@ def raw(
         reactions=reactions,
         replies=0,
         preview=preview,
+        text=text or preview,
         noforwards=noforwards,
     )
 
@@ -72,6 +74,17 @@ def test_group_albums_aggregates_group() -> None:
     assert album.views == 310
     assert album.date == t
     assert album.preview == "cap"
+
+
+def test_group_albums_joins_member_texts() -> None:
+    [album] = group_albums(
+        [
+            raw(2, grouped_id=7, text="#реклама"),
+            raw(1, grouped_id=7, text="caption"),
+            raw(3, grouped_id=7),
+        ]
+    )
+    assert album.text == "caption #реклама"
 
 
 def test_group_albums_keeps_singletons_in_order() -> None:

@@ -44,6 +44,7 @@ def group_albums(raw: list[RawPost]) -> list[Post]:
                 replies=max(m.replies for m in members),
                 preview=preview,
                 noforwards=any(m.noforwards for m in members),
+                text=" ".join(m.text for m in members if m.text),
             )
         )
     return posts

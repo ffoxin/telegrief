@@ -176,6 +176,7 @@ def raw_post_from_message(msg: Any, channel_id: int) -> RawPost | None:
         replies=replies,
         preview=text[:PREVIEW_CHARS],
         noforwards=bool(getattr(msg, "noforwards", False)),
+        text=text,
     )
 
 

@@ -38,6 +38,7 @@ class RawPost:
     replies: int
     preview: str
     noforwards: bool
+    text: str = ""  # whole message, whitespace-collapsed; preview is its head
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,7 @@ class Post:
     replies: int
     preview: str
     noforwards: bool
+    text: str = ""  # member texts joined, for phrase filtering
 
     @property
     def msg_id(self) -> int:
