@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 from telethon.errors import MessageIdInvalidError
-from telethon.tl import types
+from telethon.tl import functions, types
 
 from telegrief.tg.bot import (
     TelethonBot,
@@ -219,3 +219,37 @@ async def test_edit_text_wraps_other_rpc_errors() -> None:
     with pytest.raises(GatewayError) as info:
         await bot.edit_text(-100, 5, "x")
     assert not isinstance(info.value, TargetUnavailable)
+
+
+class _MenuClient:
+    def __init__(self, fail: bool = False) -> None:
+        self.requests: list[object] = []
+        self.fail = fail
+
+    def add_event_handler(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    async def __call__(self, request: object) -> None:
+        if self.fail:
+            raise MessageIdInvalidError(request=None)
+        self.requests.append(request)
+
+
+async def test_set_menu_registers_commands_and_description() -> None:
+    client = _MenuClient()
+    bot = TelethonBot(client, "bot", owner_id=1)  # type: ignore[arg-type]
+    await bot.set_menu([("folder", "add a folder"), ("help", "this list")], "About text")
+    commands, info = client.requests
+    assert isinstance(commands, functions.bots.SetBotCommandsRequest)
+    assert isinstance(commands.scope, types.BotCommandScopeDefault)
+    assert [(c.command, c.description) for c in commands.commands] == [
+        ("folder", "add a folder"),
+        ("help", "this list"),
+    ]
+    assert isinstance(info, functions.bots.SetBotInfoRequest)
+    assert info.description == "About text"
+
+
+async def test_set_menu_failure_is_not_fatal() -> None:
+    bot = TelethonBot(_MenuClient(fail=True), "bot", owner_id=1)  # type: ignore[arg-type]
+    await bot.set_menu([("help", "this list")], "About text")

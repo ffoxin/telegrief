@@ -172,6 +172,8 @@ class FakeBot:
         self.resent: list[tuple[int, list[int]]] = []
         self.deleted: list[list[int]] = []
         self.owner_messages: list[str] = []
+        self.menu: list[tuple[str, str]] | None = None
+        self.about: str | None = None
         self.bad_targets: set[int] = set()
         self.inbox: list[int] = []  # bot-side ids of relay arrivals, disjoint from user ids
         self.cleared = 0
@@ -248,6 +250,10 @@ class FakeBot:
 
     async def send_owner(self, text: str) -> None:
         self.owner_messages.append(text)
+
+    async def set_menu(self, commands: list[tuple[str, str]], about: str) -> None:
+        self.menu = list(commands)
+        self.about = about
 
     def on_next_button(self, handler: NextHandler) -> None:
         self._next_handler = handler

@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 from loguru import logger
 
 from .collector import Collector
-from .commands import CommandHandler
+from .commands import ABOUT, CommandHandler, menu
 from .config import Settings
 from .delivery import Deliverer
 from .digest import DigestService
@@ -181,6 +181,7 @@ async def serve(settings: Settings) -> None:
     app = build_app(settings, user, bot, storage, on_fatal=on_fatal)
     app.service.bind()
     bot.on_owner_command(app.commands.handle)
+    await bot.set_menu(menu(), ABOUT)
     await user.ping_bot(bot.username)
     await app.service.catch_up()
     logger.info("serving; folder schedules checked every {}s", TICK_INTERVAL_S)

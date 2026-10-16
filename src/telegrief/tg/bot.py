@@ -17,7 +17,7 @@ from telethon.errors import (
     MessageNotModifiedError,
     RPCError,
 )
-from telethon.tl import types
+from telethon.tl import functions, types
 
 from .protocols import (
     PING_TEXT,
@@ -239,6 +239,19 @@ class TelethonBot:
             await self._client.send_message(self._owner_id, text[:REPLY_LIMIT])
         except (RPCError, ValueError) as exc:
             logger.error("cannot message owner: {}", exc)
+
+    async def set_menu(self, commands: list[tuple[str, str]], about: str) -> None:
+        try:
+            await self._client(
+                functions.bots.SetBotCommandsRequest(
+                    scope=types.BotCommandScopeDefault(),
+                    lang_code="",
+                    commands=[types.BotCommand(name, text) for name, text in commands],
+                )
+            )
+            await self._client(functions.bots.SetBotInfoRequest(lang_code="", description=about))
+        except RPCError as exc:
+            logger.warning("cannot publish the command menu: {}", exc)
 
     # ---- events ----------------------------------------------------------------
 
