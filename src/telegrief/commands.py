@@ -1,4 +1,4 @@
-"""Owner-only bot commands: /folder, /folders, /run, /status, /reset."""
+"""Owner-only bot commands: /folder, /folders, /run, /status, /skip, /unskip, /reset."""
 
 from __future__ import annotations
 
@@ -26,8 +26,11 @@ USAGE = (
     "/folders — folders, settings, resolved channels\n"
     "/run [folder] [from_h] [to_h] — fetch now\n"
     "/status — queue per folder\n"
+    "/skip [phrase] — list skip phrases, or add one; posts containing it are never queued\n"
+    "/unskip <phrase> — stop skipping a phrase\n"
     "/reset <folder> — forget the digest channel"
 )
+NO_SKIPS = "no skip phrases; /skip <phrase> adds one"
 NO_FOLDERS = "no folders configured; /folder <name> adds one"
 
 # /folder key -> FolderConfig field
@@ -167,6 +170,10 @@ class CommandHandler:
             return await self._status()
         if command == "reset":
             return await self._reset(args)
+        if command == "skip":
+            return await self._skip(args)
+        if command == "unskip":
+            return await self._unskip(args)
         return USAGE
 
     # ---- /folder -------------------------------------------------------------
@@ -319,6 +326,25 @@ class CommandHandler:
                     continue
                 lines.append(f"  {info.title} ({info.display}) · {format_count(info.subscribers)}")
         return "\n".join(lines)
+
+    # ---- /skip, /unskip ------------------------------------------------------
+
+    async def _skip(self, args: list[str]) -> str:
+        phrase = " ".join(args).casefold()
+        if not phrase:
+            phrases = await self._storage.skip_phrases()
+            return "\n".join(f"🚫 {p}" for p in phrases) or NO_SKIPS
+        if await self._storage.add_skip(phrase):
+            return f"✅ skipping {phrase}"
+        return f"already skipping {phrase}"
+
+    async def _unskip(self, args: list[str]) -> str:
+        phrase = " ".join(args).casefold()
+        if not phrase:
+            return USAGE
+        if await self._storage.remove_skip(phrase):
+            return f"✅ {phrase} no longer skipped"
+        return f"not skipping {phrase}"
 
     async def _reset(self, args: list[str]) -> str:
         name = " ".join(args)

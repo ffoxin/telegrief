@@ -370,3 +370,14 @@ async def test_reset(h: Harness) -> None:
 async def test_unknown_command_shows_usage(h: Harness) -> None:
     assert await h.bot.command("help", []) == USAGE
     assert await h.bot.command("start", []) == USAGE
+
+
+async def test_skip_adds_lists_and_removes(h: Harness) -> None:
+    assert await h.bot.command("skip", []) == "no skip phrases; /skip <phrase> adds one"
+    assert await h.bot.command("skip", ["#Реклама"]) == "✅ skipping #реклама"
+    assert await h.bot.command("skip", ["#реклама"]) == "already skipping #реклама"
+    assert await h.bot.command("skip", ["текст", "прислан"]) == "✅ skipping текст прислан"
+    assert await h.bot.command("skip", []) == "🚫 #реклама\n🚫 текст прислан"
+    assert await h.bot.command("unskip", ["#реклама"]) == "✅ #реклама no longer skipped"
+    assert await h.bot.command("unskip", ["#реклама"]) == "not skipping #реклама"
+    assert await h.bot.command("unskip", []) == USAGE
