@@ -1,3 +1,4 @@
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,6 +11,8 @@ from telegrief.commands import (
     USAGE,
     CommandHandler,
     apply_pairs,
+    help_for,
+    menu,
     next_occurrence,
     parse_folder_args,
     parse_run_args,
@@ -353,7 +356,7 @@ async def test_folders_without_folders(storage: Storage, tmp_path: Path) -> None
 
 
 async def test_reset(h: Harness) -> None:
-    assert await h.bot.command("reset", []) == USAGE
+    assert await h.bot.command("reset", []) == help_for("reset")
     assert await h.bot.command("reset", ["Memes"]) == "no digest channel mapping for Memes"
     await h.bot.command("run", ["Memes"])
     assert await h.bot.command("reset", ["memes"]) == (
@@ -367,9 +370,29 @@ async def test_reset(h: Harness) -> None:
     assert text.endswith("remove it by hand; next run creates a new one")
 
 
-async def test_unknown_command_shows_usage(h: Harness) -> None:
+def test_help_overview_covers_every_command() -> None:
+    names = ["folder", "folders", "run", "status", "skip", "unskip", "reset", "help"]
+    assert [name for name, _ in menu()] == names
+    assert all(re.fullmatch(r"[a-z0-9_]{1,32}", name) for name, _ in menu())
+    assert all(0 < len(summary) <= 256 for _, summary in menu())
+    assert all(f"/{name}" in USAGE for name in names)
+    assert USAGE.endswith("/help <command> shows details, e.g. /help folder")
+
+
+def test_help_for_command() -> None:
+    folder = help_for("folder")
+    assert folder is not None
+    assert folder.startswith("/folder <name> [key=value ...]")
+    assert "min_age" in folder and "/folder Memes min_age=24 period=6" in folder
+    assert help_for("nope") is None
+
+
+async def test_help_and_unknown_commands(h: Harness) -> None:
     assert await h.bot.command("help", []) == USAGE
     assert await h.bot.command("start", []) == USAGE
+    assert await h.bot.command("help", ["skip"]) == help_for("skip")
+    assert await h.bot.command("help", ["bogus"]) == "unknown command /bogus; /help lists them"
+    assert await h.bot.command("bogus", []) == "unknown command /bogus; /help lists them"
 
 
 async def test_skip_adds_lists_and_removes(h: Harness) -> None:
@@ -380,4 +403,4 @@ async def test_skip_adds_lists_and_removes(h: Harness) -> None:
     assert await h.bot.command("skip", []) == "🚫 #реклама\n🚫 текст прислан"
     assert await h.bot.command("unskip", ["#реклама"]) == "✅ #реклама no longer skipped"
     assert await h.bot.command("unskip", ["#реклама"]) == "not skipping #реклама"
-    assert await h.bot.command("unskip", []) == USAGE
+    assert await h.bot.command("unskip", []) == help_for("unskip")

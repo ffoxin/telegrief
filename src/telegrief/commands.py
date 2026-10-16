@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -19,16 +20,97 @@ from .tg.protocols import FolderNotFound, UserGateway
 if TYPE_CHECKING:
     from .storage import Storage
 
-USAGE = (
-    "/folder <name> [key=value ...] — add or update a folder; keys: min_age, period, batch, "
-    "scoring, min_denominator, max_items, max_age, target, next\n"
-    "/folder <name> off — remove a folder (digest channel kept)\n"
-    "/folders — folders, settings, resolved channels\n"
-    "/run [folder] [from_h] [to_h] — fetch now\n"
-    "/status — queue per folder\n"
-    "/skip [phrase] — list skip phrases, or add one; posts containing it are never queued\n"
-    "/unskip <phrase> — stop skipping a phrase\n"
-    "/reset <folder> — forget the digest channel"
+
+@dataclass(frozen=True)
+class Command:
+    name: str
+    usage: str  # syntax, starts with /name
+    summary: str  # one line: overview entry and the client's command menu
+    details: str = ""  # shown by /help <name>
+
+
+COMMANDS: tuple[Command, ...] = (
+    Command(
+        "folder",
+        "/folder <name> [key=value ...]",
+        "add a folder or change its settings",
+        "Adds the Telegram folder <name> with default settings, or changes the given ones.\n"
+        "/folder <name> alone shows the current settings.\n"
+        "/folder <name> off removes the folder and its queue; the digest channel stays.\n"
+        "\n"
+        "Keys (default in brackets):\n"
+        "min_age — hours a post must be old before it is fetched [24]\n"
+        "period — hours between fetches; each fetch covers one period [24]\n"
+        "batch — posts per batch [10]\n"
+        "scoring — per_view | per_subscriber | raw [per_view]\n"
+        "min_denominator — floor for views / subscribers when scoring [200]\n"
+        "max_items — queue cap, lowest scores dropped first [1000]\n"
+        "max_age — days a post may wait in the queue [7]\n"
+        "target — id of an existing channel to post digests to (bot must be admin)\n"
+        "next — HH:MM (in TZ) or now: when the next fetch runs\n"
+        "\n"
+        "Examples:\n"
+        "/folder Memes min_age=24 period=6\n"
+        "/folder Memes batch=20 next=09:00",
+    ),
+    Command("folders", "/folders", "folders with settings, queue size and resolved channels"),
+    Command(
+        "run",
+        "/run [folder] [from_h] [to_h]",
+        "fetch now",
+        "Fetches one folder, or every folder when none is given.\n"
+        "The window defaults to the folder's min_age / period; from_h and to_h are hours "
+        "before now, e.g. /run Memes 24 0 fetches the last 24 hours.",
+    ),
+    Command("status", "/status", "last fetch, queue size and next fetch per folder"),
+    Command(
+        "skip",
+        "/skip [phrase]",
+        "list skip phrases, or add one",
+        "A post whose text contains the phrase (anywhere, any case) is never queued.\n"
+        "Applies to fetches from now on; posts already queued stay.\n"
+        "Example: /skip #реклама",
+    ),
+    Command("unskip", "/unskip <phrase>", "stop skipping a phrase"),
+    Command(
+        "reset",
+        "/reset <folder>",
+        "forget the digest channel",
+        "Forgets the folder's digest channel and takes it out of the Telegram folder; "
+        "the next fetch creates a new one. The old channel itself is kept.",
+    ),
+    Command("help", "/help [command]", "this list, or details of one command"),
+)
+_BY_NAME = {c.name: c for c in COMMANDS}
+
+
+def help_text() -> str:
+    lines = [f"{c.usage} — {c.summary}" for c in COMMANDS]
+    lines.append("/help <command> shows details, e.g. /help folder")
+    return "\n".join(lines)
+
+
+def help_for(name: str) -> str | None:
+    command = _BY_NAME.get(name.lstrip("/"))
+    if command is None:
+        return None
+    head = f"{command.usage} — {command.summary}"
+    return f"{head}\n\n{command.details}" if command.details else head
+
+
+def unknown_command(name: str) -> str:
+    return f"unknown command /{name.lstrip('/')}; /help lists them"
+
+
+def menu() -> list[tuple[str, str]]:
+    """(command, description) pairs for the client's command menu."""
+    return [(c.name, c.summary) for c in COMMANDS]
+
+
+USAGE = help_text()
+ABOUT = (
+    "Top posts from your Telegram folders, queued best-first into a digest channel. "
+    "/help lists the commands."
 )
 NO_SKIPS = "no skip phrases; /skip <phrase> adds one"
 NO_FOLDERS = "no folders configured; /folder <name> adds one"
@@ -174,7 +256,11 @@ class CommandHandler:
             return await self._skip(args)
         if command == "unskip":
             return await self._unskip(args)
-        return USAGE
+        if command in ("help", "start"):
+            if not args:
+                return USAGE
+            return help_for(args[0]) or unknown_command(args[0])
+        return unknown_command(command)
 
     # ---- /folder -------------------------------------------------------------
 
@@ -341,7 +427,7 @@ class CommandHandler:
     async def _unskip(self, args: list[str]) -> str:
         phrase = " ".join(args).casefold()
         if not phrase:
-            return USAGE
+            return help_for("unskip") or USAGE
         if await self._storage.remove_skip(phrase):
             return f"✅ {phrase} no longer skipped"
         return f"not skipping {phrase}"
@@ -349,7 +435,7 @@ class CommandHandler:
     async def _reset(self, args: list[str]) -> str:
         name = " ".join(args)
         if not name:
-            return USAGE
+            return help_for("reset") or USAGE
         folder = await self._storage.find_folder(name)
         if folder is not None:
             name = folder.name
