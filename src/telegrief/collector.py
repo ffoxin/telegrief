@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
@@ -48,6 +48,14 @@ def group_albums(raw: list[RawPost]) -> list[Post]:
             )
         )
     return posts
+
+
+def drop_skipped(posts: list[Post], phrases: Iterable[str]) -> list[Post]:
+    """Posts whose text contains none of ``phrases`` (case-insensitive substring)."""
+    needles = [p.casefold() for p in phrases]
+    if not needles:
+        return posts
+    return [post for post in posts if not any(n in post.text.casefold() for n in needles)]
 
 
 @dataclass

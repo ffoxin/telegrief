@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -186,6 +187,15 @@ async def test_fetch_posts_note_and_first_batch(h: Harness) -> None:
     assert (folder.fetch_msg_id, folder.fetch_added) == (None, 0)
     assert (folder.button_msg_id, folder.button_text) == (FOOTER, footer)
     assert [i.sent_msg_id for i in await h.storage.batch_items(h.fid, NOW)] == [2, 3]
+
+
+async def test_fetch_drops_posts_with_skip_phrases(h: Harness) -> None:
+    await h.storage.add_skip("#реклама")
+    h.add_posts(5)
+    h.user.posts[CH_ID][1] = replace(h.user.posts[CH_ID][1], text="Купи слона #РЕКЛАМА сегодня")
+    assert await h.fetch() == "✅ Memes: +4 · 4 queued · 🚫 1 skipped"
+    assert [ids for _, ids in h.user.forwarded] == [[1], [3]]  # first batch, best first
+    assert {i.msg_id for i in await h.storage.pending_items(h.fid)} == {4, 5}
 
 
 async def test_fetch_window_from_reference_time_and_overrides(h: Harness) -> None:

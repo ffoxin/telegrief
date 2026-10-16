@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from telegrief.collector import Collector, digest_targets, group_albums, window
+from telegrief.collector import Collector, digest_targets, drop_skipped, group_albums, window
 from telegrief.models import ChannelInfo, RawPost
 from telegrief.storage import Storage
 from telegrief.tg.protocols import FolderNotFound
@@ -85,6 +85,12 @@ def test_group_albums_joins_member_texts() -> None:
         ]
     )
     assert album.text == "caption #реклама"
+
+
+def test_drop_skipped_matches_substring_ignoring_case() -> None:
+    posts = group_albums([raw(1, text="Новости #Реклама"), raw(2, text="plain"), raw(3)])
+    assert [p.msg_id for p in drop_skipped(posts, ["#реклама"])] == [2, 3]
+    assert drop_skipped(posts, []) == posts
 
 
 def test_group_albums_keeps_singletons_in_order() -> None:

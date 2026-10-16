@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from .collector import Collector, digest_targets
+from .collector import Collector, digest_targets, drop_skipped
 from .config import Settings
 from .delivery import Deliverer, render_fetch_note, render_footer
 from .models import ChannelInfo, Folder, ItemState, QueueItem
@@ -141,7 +141,9 @@ class DigestService:
             target = await self._targets.resolve(folder.name, now)
             exclude = await digest_targets(self._storage)
             collected = await self._collector.collect(folder.name, start, end, now, exclude=exclude)
-            scored = rank(collected.posts, collected.channels, cfg)
+            kept = drop_skipped(collected.posts, await self._storage.skip_phrases())
+            skipped = len(collected.posts) - len(kept)
+            scored = rank(kept, collected.channels, cfg)
             added = await self._storage.enqueue(folder.id, scored, now)
             await self._storage.prune(folder.id, cfg, now)
             pending = await self._storage.count_pending(folder.id)
@@ -161,6 +163,8 @@ class DigestService:
             await self._report_failure(folder.id, str(exc), message, scheduled)
             return message
         message = f"✅ {folder.name}: +{added} · {pending} queued"
+        if skipped:
+            message += f" · 🚫 {skipped} skipped"
         if collected.errors:
             message += f" · ⚠️ skipped: {', '.join(collected.errors)}"
         logger.info(message)
