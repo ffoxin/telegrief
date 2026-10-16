@@ -52,8 +52,8 @@ def scored(
 
 
 async def test_migrate_is_idempotent(storage: Storage) -> None:
-    assert await storage.migrate() == 2
-    assert await storage.migrate() == 2
+    assert await storage.migrate() == 3
+    assert await storage.migrate() == 3
 
 
 async def test_migration_002_keeps_targets(tmp_path: Path) -> None:
@@ -310,3 +310,14 @@ async def test_update_scores_touches_pending_only(storage: Storage) -> None:
     await storage.update_scores(folder.id, [(CH.id, 1, 9.0), (CH.id, 2, 7.0)])
     assert [(i.msg_id, i.score) for i in await storage.pending_items(folder.id)] == [(2, 7.0)]
     assert await storage.count_items(folder.id, ItemState.FAILED) == 1
+
+
+async def test_skip_phrases_casefold_dedupe_and_remove(storage: Storage) -> None:
+    assert await storage.skip_phrases() == []
+    assert await storage.add_skip("#Реклама") is True
+    assert await storage.add_skip(" #реклама ") is False
+    assert await storage.add_skip("#текстприслан") is True
+    assert await storage.skip_phrases() == ["#реклама", "#текстприслан"]
+    assert await storage.remove_skip("#РЕКЛАМА") is True
+    assert await storage.remove_skip("#реклама") is False
+    assert await storage.skip_phrases() == ["#текстприслан"]

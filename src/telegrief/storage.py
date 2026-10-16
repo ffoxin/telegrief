@@ -244,6 +244,27 @@ class Storage:
         await self._conn.commit()
         return cur.rowcount > 0
 
+    # ---- skip phrases ----------------------------------------------------------
+
+    async def add_skip(self, phrase: str) -> bool:
+        """Remember ``phrase`` (casefolded, trimmed); False if it was already there."""
+        cur = await self._conn.execute(
+            "INSERT OR IGNORE INTO skip_phrases (phrase) VALUES (?)", (phrase.strip().casefold(),)
+        )
+        await self._conn.commit()
+        return cur.rowcount > 0
+
+    async def remove_skip(self, phrase: str) -> bool:
+        cur = await self._conn.execute(
+            "DELETE FROM skip_phrases WHERE phrase = ?", (phrase.strip().casefold(),)
+        )
+        await self._conn.commit()
+        return cur.rowcount > 0
+
+    async def skip_phrases(self) -> list[str]:
+        rows = await self._fetchall("SELECT phrase FROM skip_phrases ORDER BY phrase")
+        return [str(r["phrase"]) for r in rows]
+
     # ---- folders -------------------------------------------------------------
 
     async def create_folder(self, name: str, cfg: FolderConfig, now: datetime) -> Folder:
