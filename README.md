@@ -60,9 +60,14 @@ service resolved, `/status` the queue.
   folder's `min_age` / `period`, e.g. `/run Memes 24 0` for the last 24 hours.
 - `/status` — last fetch, queue size, last batch, next fetch and the last
   error per folder.
+- `/skip [phrase]` — list the skip phrases, or add one (spaces allowed). A
+  post whose text contains a skip phrase anywhere, in any case, is never
+  queued; applies to fetches from then on. `/unskip <phrase>` removes one.
 - `/reset <folder>` — forget the digest channel and take it out of the folder;
   the next fetch creates a new one. The old channel itself is kept.
-- anything else (`/start`, `/help`) — usage.
+- `/help [command]` — the command list, or details and examples of one
+  command. The same list fills the client's `/` menu, and `/start` or an
+  unknown command points to it.
 
 Folder names are matched ignoring emoji, case and extra spaces, so
 `/folder mem period=6` finds the Telegram folder `😊mEm` and the digest
@@ -75,9 +80,10 @@ by hand if you like) and never reads digest channels as sources.
 Every minute the service checks which folders are due. A due folder fetches
 the window anchored to its scheduled slot, so a late run never leaves a gap;
 if the service was down for several slots only the latest one is fetched.
-New posts go into the queue (re-fetched ones are refreshed, already shown
-ones are skipped), posts older than `max_age` are dropped, and the queue is
-capped to the best `max_items`. The digest channel gets a short note
+Posts containing a skip phrase are dropped first. New posts go into the
+queue (re-fetched ones are refreshed, already shown ones are skipped), posts
+older than `max_age` are dropped, and the queue is capped to the best
+`max_items`. The digest channel gets a short note
 `📥 +N · M queued` (edited in place by later fetches until a batch goes out)
 and, if the last batch is already read, the next batch right away.
 
