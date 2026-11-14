@@ -120,7 +120,8 @@ Entries outlive the queue, so a post stays findable after `max_age`.
 A word matches anywhere inside the indexed text, ignoring case and ё/е, so
 `/find кот` also finds `котом`. A post that cannot be read is retried every
 10 minutes, four times; the last try leaves pictures and sound out so the
-text is still indexed. Posts delivered before the index existed are added by
+text is still indexed. A rate limit from Anthropic or Groq is not counted as
+a failure: indexing pauses and resumes within 10 minutes. Posts delivered before the index existed are added by
 `/reindex`, as far as they are still in a queue.
 
 ## Configuration

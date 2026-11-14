@@ -6,6 +6,8 @@ from typing import Any, Protocol
 
 import groq
 
+from .errors import Busy
+
 TIMEOUT_S = 120.0
 # Whisper invents text over silence and music; segments it marks as probably
 # not speech are left out.
@@ -43,6 +45,8 @@ class GroqTranscriber:
                 response_format="verbose_json",
                 temperature=0.0,
             )
+        except groq.RateLimitError as exc:
+            raise Busy(f"Groq: {exc.message}") from exc
         except groq.BadRequestError as exc:
             raise Untranscribable(exc.message) from exc
         segments = getattr(result, "segments", None)

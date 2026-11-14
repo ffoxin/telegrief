@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from .errors import Busy
 from .models import IndexEntry, QueueItem
 from .speech import Transcriber, Untranscribable
 from .tg.protocols import SessionDead, UserGateway
@@ -37,6 +38,7 @@ class Indexer:
 
     A failed entry is retried every ``retry_s``; the last of ``MAX_ATTEMPTS`` leaves the
     media out, so a post whose pictures or sound cannot be read is still found by its text.
+    A rate limit is not a failure: the pass stops and the entry waits, untouched.
     """
 
     def __init__(
@@ -74,7 +76,11 @@ class Indexer:
         for entry in await self._storage.index_pending():
             if self._retry_at.get(entry.id, 0.0) > self._monotonic():
                 continue
-            done += await self._index(entry)
+            try:
+                done += await self._index(entry)
+            except Busy as exc:
+                logger.info("indexing paused, {} posts done this pass: {}", done, exc)
+                break
         return done
 
     async def _index(self, entry: IndexEntry) -> bool:
@@ -102,7 +108,7 @@ class Indexer:
                     except Untranscribable as exc:
                         logger.info("{}/{}: sound skipped: {}", entry.channel_id, entry.msg_id, exc)
             speech_text = " ".join(s for s in spoken if s)
-        except SessionDead:
+        except (SessionDead, Busy):
             raise
         except Exception as exc:
             logger.warning(

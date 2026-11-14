@@ -5,6 +5,7 @@ import groq
 import httpx
 import pytest
 
+from telegrief.errors import Busy
 from telegrief.speech import GroqTranscriber, Untranscribable, spoken_text
 
 
@@ -63,10 +64,13 @@ async def test_transcribe_without_segments_uses_the_text() -> None:
     assert await t.transcribe(b"x") == "Привет."
 
 
-async def test_rejected_clip_is_permanent_other_errors_retry() -> None:
+async def test_rejected_clip_is_permanent_rate_limit_is_busy() -> None:
     t, _ = transcriber(error(groq.BadRequestError, 400))
     with pytest.raises(Untranscribable):
         await t.transcribe(b"x")
     t, _ = transcriber(error(groq.RateLimitError, 429))
-    with pytest.raises(groq.RateLimitError):
+    with pytest.raises(Busy):
+        await t.transcribe(b"x")
+    t, _ = transcriber(error(groq.InternalServerError, 500))
+    with pytest.raises(groq.InternalServerError):
         await t.transcribe(b"x")

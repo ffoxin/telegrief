@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from telegrief.errors import Busy
 from telegrief.indexer import MAX_ATTEMPTS, Indexer, fold
 from telegrief.models import Image, IndexState, PostContent, QueueItem
 from telegrief.speech import Untranscribable
@@ -208,3 +209,18 @@ async def test_dead_session_is_not_counted_as_an_attempt(storage: Storage) -> No
     with pytest.raises(SessionDead):
         await h.indexer.drain()
     assert [e.attempts for e in await storage.index_pending()] == [0]
+
+
+async def test_rate_limit_pauses_the_pass_without_counting_attempts(storage: Storage) -> None:
+    h = Harness(storage)
+    await h.add(1, "раз")
+    await h.add(2, "два", speech=(b"one",))
+    await h.add(3, "три")
+    h.transcriber.error = Busy("Groq: slow down")
+
+    assert await h.indexer.drain() == 1  # stops at the limited post, the rest waits
+    assert [(e.msg_id, e.attempts) for e in await storage.index_pending()] == [(2, 0), (3, 0)]
+
+    h.transcriber.error = None
+    assert await h.indexer.drain() == 2  # no cooldown: picked up on the next pass
+    assert await h.found("сказано") == [2]

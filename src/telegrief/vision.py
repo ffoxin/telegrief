@@ -9,6 +9,7 @@ from typing import Protocol
 import anthropic
 from anthropic.types import ImageBlockParam, TextBlockParam
 
+from .errors import Busy
 from .models import Image
 
 MAX_TOKENS = 4096
@@ -65,6 +66,8 @@ class ClaudeDescriber:
                 system=SYSTEM,
                 messages=[{"role": "user", "content": content}],
             )
+        except anthropic.RateLimitError as exc:
+            raise Busy(f"Anthropic: {exc.message}") from exc
         except anthropic.BadRequestError as exc:
             raise Undescribable(exc.message) from exc
         if response.stop_reason == "refusal":

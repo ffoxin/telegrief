@@ -6,6 +6,7 @@ import anthropic
 import httpx2
 import pytest
 
+from telegrief.errors import Busy
 from telegrief.models import Image
 from telegrief.vision import ClaudeDescriber, Undescribable
 
@@ -74,4 +75,11 @@ async def test_other_api_errors_propagate_for_a_retry() -> None:
     response = httpx2.Response(529, request=httpx2.Request("POST", "https://api.anthropic.com"))
     d, _ = describer(anthropic.InternalServerError("overloaded", response=response, body=None))
     with pytest.raises(anthropic.InternalServerError):
+        await d.describe([Image(b"one", "image/jpeg")], "")
+
+
+async def test_rate_limit_is_busy() -> None:
+    response = httpx2.Response(429, request=httpx2.Request("POST", "https://api.anthropic.com"))
+    d, _ = describer(anthropic.RateLimitError("slow down", response=response, body=None))
+    with pytest.raises(Busy):
         await d.describe([Image(b"one", "image/jpeg")], "")
