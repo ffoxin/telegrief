@@ -26,6 +26,15 @@ from .models import (
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 PENDING_ORDER = "ORDER BY score DESC, engagement DESC, date ASC"
+# Admin page filters: name -> SQL condition on post_index
+INDEX_FILTERS = {
+    "all": "1",
+    "speech": "speech_text != ''",
+    "pictures": "media_text != ''",
+    "nothing": "state = 'done' AND search = ''",
+    "pending": "state = 'pending'",
+    "failed": "state = 'failed'",
+}
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -667,3 +676,32 @@ class Storage:
         assert row is not None
         found = {key: int(row[key]) for key in ("text", "pictures", "speech")}
         return {**found, "nothing": int(row["empty"])}
+
+    # ---- admin ---------------------------------------------------------------
+
+    async def index_list(
+        self, needles: list[str], show: str, limit: int, offset: int
+    ) -> tuple[list[IndexEntry], int]:
+        """Index entries of one kind (``INDEX_FILTERS``) containing every needle, newest first."""
+        where = INDEX_FILTERS[show] + " AND instr(search, ?) > 0" * len(needles)
+        row = await self._fetchone(
+            f"SELECT COUNT(*) AS n FROM post_index WHERE {where}", tuple(needles)
+        )
+        rows = await self._fetchall(
+            f"SELECT * FROM post_index WHERE {where} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?",
+            (*needles, limit, offset),
+        )
+        return [_index_entry_from_row(r) for r in rows], int(row["n"]) if row is not None else 0
+
+    async def index_get(self, entry_id: int) -> IndexEntry | None:
+        row = await self._fetchone("SELECT * FROM post_index WHERE id = ?", (entry_id,))
+        return _index_entry_from_row(row) if row is not None else None
+
+    async def index_requeue(self, entry_id: int) -> bool:
+        """Send one entry through indexing again; its current content stays until then."""
+        cur = await self._conn.execute(
+            "UPDATE post_index SET state = 'pending', attempts = 0, error = NULL WHERE id = ?",
+            (entry_id,),
+        )
+        await self._conn.commit()
+        return cur.rowcount > 0

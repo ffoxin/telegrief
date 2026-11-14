@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     stt_model: str = "whisper-large-v3"
     # Prometheus text file for node-exporter's textfile collector; unset: no metrics.
     metrics_file: Path | None = None
+    # Port of the admin web page (search index browser); unset: no web server. It trusts
+    # the Remote-User header, so it must only be reachable through an authenticating proxy.
+    admin_port: int | None = None
     data_dir: Path = Path("/app/data")
     log_level: str = "INFO"
 
