@@ -89,3 +89,22 @@ def test_spoken_text_drops_whisper_phantom_lines(line: str) -> None:
 async def test_phantom_only_text_without_segments_is_dropped() -> None:
     t, _ = transcriber(SimpleNamespace(text="Thank you."))
     assert await t.transcribe(b"x") == ""
+
+
+@pytest.mark.parametrize(
+    ("heard", "kept"),
+    [
+        (
+            "Мне нужно это убирать? Господи. Субтитры сделал DimaTorzok",
+            "Мне нужно это убирать? Господи.",
+        ),
+        ("Субтитры подогнал «Симон»", ""),
+        ("🎵", ""),
+        ("Газовый лед? [ТРЕВОЖНАЯ МУЗЫКА] Бежим.", "Газовый лед? Бежим."),
+        ("Привет. Thanks for watching!", "Привет."),
+        ("Редактор субтитров А.Семкин Корректор А.Егорова", ""),
+        ("Он сказал: продолжение следует... и ушёл", "Он сказал: и ушёл"),
+    ],
+)
+def test_spoken_text_cuts_phantom_lines_out_of_real_speech(heard: str, kept: str) -> None:
+    assert spoken_text([{"text": heard}]) == kept

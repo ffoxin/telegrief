@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Protocol
 
 import groq
@@ -26,6 +27,7 @@ class Transcriber(Protocol):
 # trained on. Compared with letters only, case folded.
 PHANTOMS = frozenset(
     {
+        "",
         "субтитрысделалdimatorzok",
         "субтитрысоздавалdimatorzok",
         "субтитрыделалdimatorzok",
@@ -50,6 +52,23 @@ PHANTOMS = frozenset(
 )
 
 
+# The same lines glued to real speech, usually at the end: cut out wherever they are.
+PHANTOM_RE = re.compile(
+    r"""
+    (?: субтитры\s+\w+\s+[«"']?[\w.\-]+[»"']?        # Субтитры сделал DimaTorzok
+      | редактор\s+субтитров\s+(?:[А-ЯЁA-Z]\.\s*)?\S+
+      | корректор\s+(?:[А-ЯЁA-Z]\.\s*)?\S+
+      | продолжение\s+следует
+      | спасибо\s+за\s+просмотр
+      | thanks?(?:\s+you)?\s+for\s+watching
+    ) [.!…]*
+    | \[[^\]]*\]                                      # [музыка]
+    | \([^)]*(?:music|музыка|applause)[^)]*\)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
 def _letters(text: str) -> str:
     return "".join(ch for ch in text.casefold() if ch.isalpha())
 
@@ -62,7 +81,8 @@ def spoken_text(segments: list[Any]) -> str:
         if float(s.get("no_speech_prob", 0.0)) <= NO_SPEECH_MAX
     ]
     kept = [p for p in parts if p and _letters(p) not in PHANTOMS]
-    return "" if _letters(" ".join(kept)) in PHANTOMS else " ".join(kept)
+    text = " ".join(PHANTOM_RE.sub(" ", " ".join(kept)).split())
+    return "" if _letters(text) in PHANTOMS else text  # "" too: nothing but symbols
 
 
 class GroqTranscriber:
