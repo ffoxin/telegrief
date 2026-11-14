@@ -654,14 +654,16 @@ class Storage:
         return {(int(r["folder_id"]), str(r["s"])): int(r["n"]) for r in rows}
 
     async def index_coverage(self) -> dict[str, int]:
-        """Indexed posts that have text, a picture description, a transcript."""
+        """Indexed posts with text, a picture description, a transcript, or nothing at all."""
         row = await self._fetchone(
             """
             SELECT COALESCE(SUM(text != ''), 0) AS text,
                    COALESCE(SUM(media_text != ''), 0) AS pictures,
-                   COALESCE(SUM(speech_text != ''), 0) AS speech
+                   COALESCE(SUM(speech_text != ''), 0) AS speech,
+                   COALESCE(SUM(search = ''), 0) AS empty
             FROM post_index WHERE state = 'done'
             """
         )
         assert row is not None
-        return {key: int(row[key]) for key in ("text", "pictures", "speech")}
+        found = {key: int(row[key]) for key in ("text", "pictures", "speech")}
+        return {**found, "nothing": int(row["empty"])}

@@ -74,3 +74,18 @@ async def test_rejected_clip_is_permanent_rate_limit_is_busy() -> None:
     t, _ = transcriber(error(groq.InternalServerError, 500))
     with pytest.raises(groq.InternalServerError):
         await t.transcribe(b"x")
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["Субтитры сделал DimaTorzok", "Thank you.", "SUSCRÍBETE 🙏", " Продолжение следует... "],
+)
+def test_spoken_text_drops_whisper_phantom_lines(line: str) -> None:
+    assert spoken_text([{"text": line, "no_speech_prob": 0.1}]) == ""
+    kept = spoken_text([{"text": "Привет."}, {"text": line}, {"text": "Thank you, Петя."}])
+    assert kept == "Привет. Thank you, Петя."
+
+
+async def test_phantom_only_text_without_segments_is_dropped() -> None:
+    t, _ = transcriber(SimpleNamespace(text="Thank you."))
+    assert await t.transcribe(b"x") == ""

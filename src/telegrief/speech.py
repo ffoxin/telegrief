@@ -22,14 +22,47 @@ class Transcriber(Protocol):
     async def transcribe(self, clip: bytes) -> str: ...
 
 
+# What Whisper writes over music and noise: lines from the subtitle files it was
+# trained on. Compared with letters only, case folded.
+PHANTOMS = frozenset(
+    {
+        "субтитрысделалdimatorzok",
+        "субтитрысоздавалdimatorzok",
+        "субтитрыделалdimatorzok",
+        "редакторсубтитров",
+        "продолжениеследует",
+        "спасибозапросмотр",
+        "подписывайтесьнаканал",
+        "thankyou",
+        "thankyouforwatching",
+        "thanksforwatching",
+        "pleasesubscribe",
+        "subscribe",
+        "suscríbete",
+        "suscribete",
+        "you",
+        "bye",
+        "музыка",
+        "music",
+        "applause",
+        "аплодисменты",
+    }
+)
+
+
+def _letters(text: str) -> str:
+    return "".join(ch for ch in text.casefold() if ch.isalpha())
+
+
 def spoken_text(segments: list[Any]) -> str:
-    """Text of the segments Whisper considers speech, joined."""
+    """Text of the segments Whisper considers speech, joined; known phantom lines dropped."""
     parts = [
         str(s.get("text", "")).strip()
         for s in segments
         if float(s.get("no_speech_prob", 0.0)) <= NO_SPEECH_MAX
     ]
-    return " ".join(p for p in parts if p)
+    kept = [p for p in parts if p and _letters(p) not in PHANTOMS]
+    return "" if _letters(" ".join(kept)) in PHANTOMS else " ".join(kept)
 
 
 class GroqTranscriber:
@@ -52,4 +85,4 @@ class GroqTranscriber:
         segments = getattr(result, "segments", None)
         if isinstance(segments, list):
             return spoken_text(segments)
-        return result.text.strip()
+        return spoken_text([{"text": result.text}])
