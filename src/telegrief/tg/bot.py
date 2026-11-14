@@ -65,7 +65,7 @@ async def dispatch_owner_message(event: Any, handler: CommandHandlerFn) -> None:
     except Exception as exc:
         logger.exception("command /{} failed", command)
         reply = f"❌ {exc}"
-    await event.respond((reply or "ok")[:REPLY_LIMIT])
+    await event.respond((reply or "ok")[:REPLY_LIMIT], link_preview=False)
 
 
 def next_button(folder_id: int | None, label: str) -> Any:

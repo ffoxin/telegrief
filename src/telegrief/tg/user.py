@@ -24,7 +24,8 @@ from telethon.errors import (
 from telethon.tl import functions, types
 
 from ..config import normalize_title
-from ..models import ChannelInfo, RawPost
+from ..media import speech_clip
+from ..models import ChannelInfo, Image, ImageType, PostContent, RawPost
 from .protocols import (
     PING_TEXT,
     ChannelUnavailable,
@@ -40,6 +41,17 @@ from .protocols import (
 PREVIEW_CHARS = 80
 CAPTION_LIMIT = 1024
 FLOOD_SLEEP_THRESHOLD = 120
+# Search index: photos are read at the smallest size that keeps text legible, image
+# files only when small, and the sound of a video or audio file only when the file is.
+PHOTO_MIN_SIDE = 1200
+MAX_IMAGE_BYTES = 4 * 1024 * 1024
+MAX_SPEECH_BYTES = 50 * 1024 * 1024
+IMAGE_MIMES: dict[str, ImageType] = {
+    "image/jpeg": "image/jpeg",
+    "image/png": "image/png",
+    "image/gif": "image/gif",
+    "image/webp": "image/webp",
+}
 FATAL_ERRORS = (
     AuthKeyUnregisteredError,
     AuthKeyInvalidError,
@@ -178,6 +190,30 @@ def raw_post_from_message(msg: Any, channel_id: int) -> RawPost | None:
         noforwards=bool(getattr(msg, "noforwards", False)),
         text=text,
     )
+
+
+def pick_photo_size(sizes: Iterable[Any]) -> Any:
+    """Smallest size with a side of PHOTO_MIN_SIDE or more, else the largest; None if none."""
+    sized = sorted(
+        (s for s in sizes if isinstance(s, types.PhotoSize | types.PhotoSizeProgressive)),
+        key=lambda s: max(s.w, s.h),
+    )
+    if not sized:
+        return None
+    return next((s for s in sized if max(s.w, s.h) >= PHOTO_MIN_SIDE), sized[-1])
+
+
+def has_sound(document: Any) -> bool:
+    """A video or audio file that can carry speech: not a GIF, sticker or muted video."""
+    mime = document.mime_type or ""
+    if not mime.startswith(("video/", "audio/")):
+        return False
+    for attr in document.attributes:
+        if isinstance(attr, types.DocumentAttributeAnimated | types.DocumentAttributeSticker):
+            return False
+        if isinstance(attr, types.DocumentAttributeVideo) and attr.nosound:
+            return False
+    return True
 
 
 def _ids(messages: Any) -> list[int]:
@@ -406,6 +442,67 @@ class TelethonUser:
             for path in files:
                 Path(path).unlink(missing_ok=True)
         return _ids(sent)
+
+    # ---- search index --------------------------------------------------------
+
+    @_translate_fatal
+    async def post_content(
+        self, channel_id: int, msg_ids: list[int], *, images: bool, speech: bool
+    ) -> PostContent:
+        try:
+            messages = await self._client.get_messages(channel_id, ids=msg_ids)
+            messages = [m for m in messages if m is not None]
+            if not messages:
+                raise ChannelUnavailable("post not found")
+            pictures: list[Image] = []
+            clips: list[bytes] = []
+            for m in messages:
+                image = await self._image(m) if images else None
+                if image is not None:
+                    pictures.append(image)
+                clip = await self._speech(m, channel_id) if speech else None
+                if clip is not None:
+                    clips.append(clip)
+        except FATAL_ERRORS:
+            raise
+        except (RPCError, ValueError, OSError) as exc:
+            raise ChannelUnavailable(str(exc)) from exc
+        text = " ".join(" ".join(m.message.split()) for m in messages if m.message)
+        return PostContent(text=text, images=tuple(pictures), speech=tuple(clips))
+
+    async def _image(self, msg: Any) -> Image | None:
+        if msg.media is None or isinstance(msg.media, types.MessageMediaWebPage):
+            return None
+        if msg.photo is not None:
+            size = pick_photo_size(msg.photo.sizes)
+            data = await self._client.download_media(msg, bytes, thumb=size)
+            return Image(data, "image/jpeg") if data else None
+        document = msg.document
+        if document is None or document.mime_type not in IMAGE_MIMES:
+            return None
+        if int(document.size or 0) > MAX_IMAGE_BYTES:
+            return None
+        data = await self._client.download_media(msg, bytes)
+        return Image(data, IMAGE_MIMES[document.mime_type]) if data else None
+
+    async def _speech(self, msg: Any, channel_id: int) -> bytes | None:
+        """Sound of a video, round video, voice message or audio file, cut for transcription."""
+        if msg.media is None or isinstance(msg.media, types.MessageMediaWebPage):
+            return None
+        document = msg.document
+        if document is None or not has_sound(document):
+            return None
+        if int(document.size or 0) > MAX_SPEECH_BYTES:
+            return None
+        self._tmp.mkdir(parents=True, exist_ok=True)
+        path = self._tmp / f"speech_{abs(channel_id)}_{msg.id}"
+        try:
+            if not await self._client.download_media(msg, file=str(path)):
+                return None
+            return await speech_clip(path)
+        finally:
+            for leftover in self._tmp.glob(f"{path.name}*"):
+                leftover.unlink(missing_ok=True)
 
     # ---- read tracking -------------------------------------------------------
 

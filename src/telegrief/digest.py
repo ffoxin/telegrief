@@ -13,6 +13,7 @@ from loguru import logger
 from .collector import Collector, digest_targets, drop_skipped
 from .config import Settings
 from .delivery import Deliverer, render_fetch_note, render_footer
+from .indexer import Indexer
 from .models import ChannelInfo, Folder, ItemState, QueueItem
 from .scoring import rank, score
 from .targets import TargetResolver
@@ -61,7 +62,9 @@ class DigestService:
         clock: Callable[[], datetime] = _utcnow,
         defer: Deferrer = _asyncio_defer,
         on_fatal: Callable[[Exception], None] | None = None,
+        indexer: Indexer | None = None,
     ) -> None:
+        self._indexer = indexer
         self._user = user
         self._bot = bot
         self._storage = storage
@@ -305,6 +308,8 @@ class DigestService:
                 item.sent_msg_id = last_id
                 item.sent_at = now
             await self._storage.update_item(item)
+            if item.state == ItemState.SENT:
+                await self._index(folder, target, item)
         pending = await self._storage.count_pending(folder.id)
         sent = [i for i in items if i.state == ItemState.SENT]
         text = render_footer(sent, channels, cfg, pending)
@@ -319,6 +324,20 @@ class DigestService:
         folder.last_batch_at = now
         await self._storage.update_folder_state(folder)
         return len(items)
+
+    async def _index(self, folder: Folder, target: int, item: QueueItem) -> None:
+        """Hand a delivered post to the search index; never fails the batch."""
+        if self._indexer is None:
+            return
+        try:
+            await self._indexer.add(folder.name, target, item)
+        except Exception:
+            logger.exception(
+                "folder {}: {}/{} not queued for indexing",
+                folder.name,
+                item.channel_id,
+                item.msg_id,
+            )
 
     def _batch_read(self, batch: list[QueueItem], max_id: int) -> bool:
         """True once the read marker covers the configured share of the batch's posts."""

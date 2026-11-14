@@ -17,10 +17,13 @@ from .commands import ABOUT, CommandHandler, menu
 from .config import Settings
 from .delivery import Deliverer
 from .digest import DigestService
+from .indexer import Indexer
+from .speech import GroqTranscriber
 from .storage import Storage
 from .targets import TargetResolver
 from .tg.bot import TelethonBot
 from .tg.user import TelethonUser
+from .vision import ClaudeDescriber
 
 HEARTBEAT_INTERVAL_S = 60
 TICK_INTERVAL_S = 60
@@ -103,6 +106,7 @@ class App:
     service: DigestService
     commands: CommandHandler
     ticker: Ticker
+    indexer: Indexer
 
 
 def build_app(
@@ -116,6 +120,21 @@ def build_app(
     collector = Collector(user, storage)
     targets = TargetResolver(user, storage, bot.username)
     deliverer = Deliverer(user, bot, settings.max_copy_bytes)
+    describer = (
+        ClaudeDescriber(settings.anthropic_api_key, settings.index_model)
+        if settings.anthropic_api_key
+        else None
+    )
+    if describer is None:
+        logger.info("no ANTHROPIC_API_KEY: pictures are not indexed")
+    transcriber = (
+        GroqTranscriber(settings.groq_api_key, settings.stt_model)
+        if settings.groq_api_key
+        else None
+    )
+    if transcriber is None:
+        logger.info("no GROQ_API_KEY: speech in videos and audio is not indexed")
+    indexer = Indexer(user, storage, describer, transcriber)
     service = DigestService(
         user=user,
         bot=bot,
@@ -126,11 +145,17 @@ def build_app(
         settings=settings,
         clock=_utcnow,
         on_fatal=on_fatal,
+        indexer=indexer,
     )
     commands = CommandHandler(
-        service, user, storage, collector, targets, ZoneInfo(settings.tz), _utcnow
+        service, user, storage, collector, targets, ZoneInfo(settings.tz), _utcnow, indexer
     )
-    return App(service=service, commands=commands, ticker=Ticker(storage, service, _utcnow))
+    return App(
+        service=service,
+        commands=commands,
+        ticker=Ticker(storage, service, _utcnow),
+        indexer=indexer,
+    )
 
 
 async def _connect(settings: Settings) -> tuple[TelethonUser, TelethonBot, Storage]:
@@ -188,6 +213,7 @@ async def serve(settings: Settings) -> None:
     tasks = [
         asyncio.create_task(Heartbeat(settings.heartbeat_path).run(), name="heartbeat"),
         asyncio.create_task(app.ticker.run(), name="ticker"),
+        asyncio.create_task(app.indexer.run(), name="indexer"),
         asyncio.create_task(user.run_until_disconnected(), name="user"),
         asyncio.create_task(bot.run_until_disconnected(), name="bot"),
         asyncio.create_task(stop.wait(), name="fatal"),

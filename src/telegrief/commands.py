@@ -1,4 +1,4 @@
-"""Owner-only bot commands: /folder, /folders, /run, /status, /skip, /unskip, /reset."""
+"""Owner-only bot commands: /folder, /folders, /run, /status, /find, /skip, /reset, ..."""
 
 from __future__ import annotations
 
@@ -11,8 +11,10 @@ from zoneinfo import ZoneInfo
 from pydantic import ValidationError
 
 from .collector import Collector, digest_targets
+from .delivery import bare_id, post_link
 from .digest import DigestService
-from .models import Folder, FolderConfig
+from .indexer import Indexer, fold
+from .models import ChannelInfo, Folder, FolderConfig, IndexEntry, IndexState
 from .scoring import format_count
 from .targets import TargetResolver
 from .tg.protocols import FolderNotFound, UserGateway
@@ -64,6 +66,25 @@ COMMANDS: tuple[Command, ...] = (
     ),
     Command("status", "/status", "last fetch, queue size and next fetch per folder"),
     Command(
+        "find",
+        "/find <words>",
+        "search delivered posts by text",
+        "Lists the delivered posts that contain every word, newest first. A word matches "
+        "anywhere inside the post's text, the text on its pictures, their description or "
+        "what is said in its video or audio, in any case: кот also finds котом.\n"
+        "Each hit links to the original post and to its copy in the digest channel.\n"
+        "/find alone shows how many posts are indexed.\n"
+        "Example: /find кот диван",
+    ),
+    Command(
+        "reindex",
+        "/reindex",
+        "index delivered posts missing from the search index",
+        "Queues every delivered post still in a queue that is not in the search index, "
+        "and retries the ones that failed. Posts are indexed on delivery; use this once "
+        "for posts delivered before the index existed.",
+    ),
+    Command(
         "skip",
         "/skip [phrase]",
         "list skip phrases, or add one",
@@ -114,6 +135,10 @@ ABOUT = (
 )
 NO_SKIPS = "no skip phrases; /skip <phrase> adds one"
 NO_FOLDERS = "no folders configured; /folder <name> adds one"
+
+FIND_LIMIT = 10
+SNIPPET_CHARS = 160
+SNIPPET_LEAD = 50
 
 # /folder key -> FolderConfig field
 CONFIG_KEYS = {
@@ -222,6 +247,38 @@ def describe(folder: Folder, pending: int, tz: ZoneInfo) -> str:
     )
 
 
+def snippet(text: str, needles: list[str]) -> str | None:
+    """Excerpt of ``text`` around the first needle found in it; None when it has none."""
+    flat = " ".join(text.split())
+    folded = flat.casefold().replace("ё", "е")
+    hits = [pos for pos in (folded.find(n) for n in needles) if pos >= 0]
+    if not hits:
+        return None
+    start = max(0, min(hits) - SNIPPET_LEAD)
+    end = start + SNIPPET_CHARS
+    return f"{'…' if start else ''}{flat[start:end]}{'…' if end < len(flat) else ''}"
+
+
+def render_hit(entry: IndexEntry, channel: ChannelInfo, needles: list[str], tz: ZoneInfo) -> str:
+    excerpt = snippet(entry.text, needles)
+    if excerpt is None:
+        picture = snippet(entry.media_text, needles)
+        spoken = snippet(entry.speech_text, needles)
+        if picture:
+            excerpt = f"🖼 {picture}"
+        elif spoken:
+            excerpt = f"🎙 {spoken}"
+        else:
+            excerpt = snippet(entry.text or entry.media_text or entry.speech_text, [""])
+    lines = [f"📌 {fmt(entry.date, tz)} · {channel.display}"]
+    if excerpt:
+        lines.append(excerpt)
+    lines.append(post_link(channel, entry.msg_id))
+    if entry.sent_msg_id is not None:
+        lines.append(f"digest: https://t.me/c/{bare_id(entry.target)}/{entry.sent_msg_id}")
+    return "\n".join(lines)
+
+
 class CommandHandler:
     def __init__(
         self,
@@ -232,7 +289,9 @@ class CommandHandler:
         targets: TargetResolver,
         tz: ZoneInfo,
         clock: Callable[[], datetime],
+        indexer: Indexer | None = None,
     ) -> None:
+        self._indexer = indexer
         self._service = service
         self._user = user
         self._storage = storage
@@ -252,6 +311,10 @@ class CommandHandler:
             return await self._status()
         if command == "reset":
             return await self._reset(args)
+        if command == "find":
+            return await self._find(args)
+        if command == "reindex":
+            return await self._reindex()
         if command == "skip":
             return await self._skip(args)
         if command == "unskip":
@@ -412,6 +475,56 @@ class CommandHandler:
                     continue
                 lines.append(f"  {info.title} ({info.display}) · {format_count(info.subscribers)}")
         return "\n".join(lines)
+
+    # ---- /find, /reindex -----------------------------------------------------
+
+    async def _find(self, args: list[str]) -> str:
+        needles = [n for n in (fold(word) for word in args) if n]
+        if not needles:
+            counts = await self._storage.index_counts()
+            stats = f"indexed {counts[IndexState.DONE]} posts"
+            if counts[IndexState.PENDING]:
+                stats += f" · {counts[IndexState.PENDING]} waiting"
+            if counts[IndexState.FAILED]:
+                stats += f" · {counts[IndexState.FAILED]} failed (/reindex retries)"
+            return f"{help_for('find')}\n\n{stats}"
+        entries, total = await self._storage.index_search(needles, FIND_LIMIT)
+        if not entries:
+            return f"nothing found for: {' '.join(args)}"
+        hits: list[str] = []
+        for entry in entries:
+            cached = await self._storage.get_channel(entry.channel_id)
+            channel = cached[0] if cached is not None else None
+            if channel is None:
+                channel = ChannelInfo(
+                    id=entry.channel_id,
+                    username=None,
+                    title=str(entry.channel_id),
+                    subscribers=0,
+                    reactions_enabled=True,
+                    noforwards=False,
+                )
+            hits.append(render_hit(entry, channel, needles, self._tz))
+        if total > len(entries):
+            hits.append(f"newest {len(entries)} of {total}; add a word to narrow it down")
+        return "\n\n".join(hits)
+
+    async def _reindex(self) -> str:
+        now = self._clock()
+        added = 0
+        for folder in await self._storage.list_folders():
+            target = await self._storage.get_target(folder.name)
+            if target is None:
+                continue
+            for item in await self._storage.sent_items(folder.id):
+                added += await self._storage.index_add(folder.name, target, item, now)
+        retried = await self._storage.index_retry_failed()
+        if self._indexer is not None:
+            self._indexer.wake()
+        reply = f"✅ {added} posts queued for indexing"
+        if retried:
+            reply += f", {retried} failed ones retried"
+        return reply
 
     # ---- /skip, /unskip ------------------------------------------------------
 

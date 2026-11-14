@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     # is sent automatically (1.0 = every post).
     auto_next_read_fraction: float = Field(default=0.9, gt=0, le=1)
     max_copy_mb: int = Field(default=200, ge=0)
+    # Describes pictures for the search index; without a key only post text is indexed.
+    anthropic_api_key: str | None = None
+    index_model: str = "claude-haiku-5-5"
+    # Transcribes speech in videos and audio for the search index.
+    groq_api_key: str | None = None
+    stt_model: str = "whisper-large-v3"
     data_dir: Path = Path("/app/data")
     log_level: str = "INFO"
 
@@ -38,6 +44,11 @@ class Settings(BaseSettings):
         except ZoneInfoNotFoundError as exc:
             raise ValueError(f"unknown timezone: {value}") from exc
         return value
+
+    @field_validator("anthropic_api_key", "groq_api_key")
+    @classmethod
+    def _blank_key_is_none(cls, value: str | None) -> str | None:
+        return (value or "").strip() or None
 
     @property
     def max_copy_bytes(self) -> int:

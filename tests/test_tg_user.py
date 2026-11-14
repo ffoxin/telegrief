@@ -13,7 +13,9 @@ from telegrief.tg.user import (
     channel_peer_ids,
     compose_caption,
     filter_title,
+    has_sound,
     match_folder,
+    pick_photo_size,
     raw_post_from_message,
     remove_peer,
     select_channel_ids,
@@ -193,3 +195,30 @@ def test_remove_peer_drops_channel_from_pinned_and_included() -> None:
     assert dialog_filter.pinned_peers == [a]
     assert dialog_filter.include_peers == [a, types.InputPeerSelf()]
     assert remove_peer(dialog_filter, -1000000000002) is False
+
+
+def _size(kind: str, side: int) -> types.PhotoSize:
+    return types.PhotoSize(type=kind, w=side, h=side // 2, size=side * 10)
+
+
+def test_pick_photo_size_prefers_the_smallest_legible_one() -> None:
+    stripped = types.PhotoStrippedSize(type="i", bytes=b"x")
+    sizes = [stripped, _size("w", 2560), _size("m", 320), _size("y", 1280), _size("x", 800)]
+    assert pick_photo_size(sizes).type == "y"
+    assert pick_photo_size(sizes[2:3] + sizes[4:]).type == "x"  # nothing large: the largest
+    assert pick_photo_size([stripped]) is None
+
+
+def _doc(mime: str, *attributes: object) -> SimpleNamespace:
+    return SimpleNamespace(mime_type=mime, attributes=list(attributes))
+
+
+def test_has_sound_skips_gifs_stickers_and_muted_videos() -> None:
+    video = types.DocumentAttributeVideo(duration=5, w=1, h=1)
+    muted = types.DocumentAttributeVideo(duration=5, w=1, h=1, nosound=True)
+    assert has_sound(_doc("video/mp4", video))
+    assert has_sound(_doc("audio/ogg", types.DocumentAttributeAudio(duration=5, voice=True)))
+    assert not has_sound(_doc("video/mp4", muted))
+    assert not has_sound(_doc("video/mp4", video, types.DocumentAttributeAnimated()))
+    assert not has_sound(_doc("image/webp"))
+    assert not has_sound(_doc(""))

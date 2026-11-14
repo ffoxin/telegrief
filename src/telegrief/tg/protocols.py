@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from ..models import ChannelInfo, RawPost
+from ..models import ChannelInfo, PostContent, RawPost
 
 # Sent by the user session to the bot at startup so the bot can message the owner;
 # the bot deletes it silently.
@@ -82,6 +82,12 @@ class UserGateway(Protocol):
     async def copy_to_relay(
         self, channel_id: int, msg_ids: list[int], caption_head: str, max_bytes: int
     ) -> list[int]: ...
+
+    async def post_content(
+        self, channel_id: int, msg_ids: list[int], *, images: bool, speech: bool
+    ) -> PostContent:
+        """Text of a post and, on request, its pictures and the sound of its video/audio."""
+        ...
 
     async def read_marker(self, channel_id: int) -> int: ...
 

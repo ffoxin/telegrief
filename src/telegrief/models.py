@@ -81,6 +81,30 @@ class Delivery(StrEnum):
     LINK = "link"
 
 
+class IndexState(StrEnum):
+    PENDING = "pending"
+    DONE = "done"
+    FAILED = "failed"
+
+
+ImageType = Literal["image/jpeg", "image/png", "image/gif", "image/webp"]
+
+
+@dataclass(frozen=True)
+class Image:
+    data: bytes
+    media_type: ImageType
+
+
+@dataclass(frozen=True)
+class PostContent:
+    """What the search index reads from a post: text, pictures, and sound clips (Ogg)."""
+
+    text: str
+    images: tuple[Image, ...] = ()
+    speech: tuple[bytes, ...] = ()
+
+
 class FolderConfig(BaseModel):
     """Per-folder tuning, editable through /folder."""
 
@@ -142,6 +166,29 @@ class QueueItem:
     delivery: Delivery | None = None
     sent_msg_id: int | None = None
     sent_at: datetime | None = None
+
+    @property
+    def msg_id(self) -> int:
+        return self.msg_ids[0]
+
+
+@dataclass
+class IndexEntry:
+    """One delivered post (or album) in the search index."""
+
+    id: int
+    folder: str
+    channel_id: int
+    msg_ids: tuple[int, ...]
+    date: datetime
+    target: int
+    sent_msg_id: int | None
+    text: str = ""
+    media_text: str = ""
+    speech_text: str = ""
+    state: IndexState = IndexState.PENDING
+    attempts: int = 0
+    error: str | None = None
 
     @property
     def msg_id(self) -> int:

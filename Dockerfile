@@ -2,6 +2,11 @@ FROM python:3.12-slim
 
 COPY --from=ghcr.io/astral-sh/uv:0.13.1 /uv /uvx /bin/
 
+# ffmpeg cuts the sound out of videos and audio for the search index.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --gid 1000 app \
     && useradd --uid 1000 --gid app --home-dir /tmp --shell /usr/sbin/nologin app
 

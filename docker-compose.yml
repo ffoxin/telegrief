@@ -19,6 +19,8 @@ services:
       - tg_api_id
       - tg_api_hash
       - bot_token
+      - anthropic_api_key
+      - groq_api_key
     volumes:
       - ./.data:/app/data
     healthcheck:
@@ -47,3 +49,9 @@ secrets:
     file: ./secrets/tg_api_hash.txt
   bot_token:
     file: ./secrets/bot_token.txt
+  # Search index (/find): Claude reads pictures, Groq's Whisper transcribes speech.
+  # An empty file switches that part off.
+  anthropic_api_key:
+    file: ./secrets/anthropic_api_key.txt
+  groq_api_key:
+    file: ./secrets/groq_api_key.txt

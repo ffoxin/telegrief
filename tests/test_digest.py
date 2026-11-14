@@ -10,6 +10,7 @@ from telegrief.collector import Collector
 from telegrief.config import Settings
 from telegrief.delivery import Deliverer
 from telegrief.digest import DigestService
+from telegrief.indexer import Indexer
 from telegrief.models import (
     ChannelInfo,
     Folder,
@@ -91,6 +92,7 @@ class Harness:
             clock=self.clock,
             defer=self.defer,
             on_fatal=self.fatal.append,
+            indexer=Indexer(self.user, storage, None, clock=self.clock),
         )
         self.service.bind()
         self.user.folders["Memes"] = [CH_ID]
@@ -511,3 +513,14 @@ async def test_rescore_updates_pending_from_cached_channel(h: Harness) -> None:
 async def test_bind_wires_both_gateways(h: Harness) -> None:
     assert h.user._read_handler is not None
     assert h.bot._next_handler is not None
+
+
+async def test_delivered_posts_are_queued_for_the_search_index(h: Harness) -> None:
+    h.add_posts(3)
+    await h.fetch()
+    pending = await h.storage.index_pending()
+    sent = await h.storage.sent_items(h.fid)
+    assert len(sent) == h.folder.config.batch_size
+    assert sorted((e.channel_id, e.msg_ids, e.target, e.sent_msg_id) for e in pending) == sorted(
+        (i.channel_id, i.msg_ids, h.target, i.sent_msg_id) for i in sent
+    )

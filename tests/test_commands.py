@@ -20,7 +20,8 @@ from telegrief.commands import (
 from telegrief.config import Settings
 from telegrief.delivery import Deliverer
 from telegrief.digest import DigestService
-from telegrief.models import ChannelInfo, FolderConfig, RawPost
+from telegrief.indexer import fold
+from telegrief.models import ChannelInfo, FolderConfig, IndexState, QueueItem, RawPost
 from telegrief.storage import Storage
 from telegrief.targets import TargetResolver
 from tests.fakes import FakeBot, FakeUser
@@ -371,7 +372,18 @@ async def test_reset(h: Harness) -> None:
 
 
 def test_help_overview_covers_every_command() -> None:
-    names = ["folder", "folders", "run", "status", "skip", "unskip", "reset", "help"]
+    names = [
+        "folder",
+        "folders",
+        "run",
+        "status",
+        "find",
+        "reindex",
+        "skip",
+        "unskip",
+        "reset",
+        "help",
+    ]
     assert [name for name, _ in menu()] == names
     assert all(re.fullmatch(r"[a-z0-9_]{1,32}", name) for name, _ in menu())
     assert all(0 < len(summary) <= 256 for _, summary in menu())
@@ -404,3 +416,100 @@ async def test_skip_adds_lists_and_removes(h: Harness) -> None:
     assert await h.bot.command("unskip", ["#реклама"]) == "✅ #реклама no longer skipped"
     assert await h.bot.command("unskip", ["#реклама"]) == "not skipping #реклама"
     assert await h.bot.command("unskip", []) == help_for("unskip")
+
+
+async def index(
+    h: Harness,
+    msg_id: int,
+    text: str,
+    media_text: str = "",
+    speech_text: str = "",
+    *,
+    channel_id: int = CH_ID,
+) -> None:
+    item = QueueItem(
+        folder_id=1,
+        channel_id=channel_id,
+        msg_ids=(msg_id,),
+        date=NOW - timedelta(hours=msg_id),
+        engagement=1,
+        views=1,
+        score=1.0,
+        noforwards=False,
+        preview="",
+        queued_at=NOW,
+        sent_msg_id=100 + msg_id,
+    )
+    assert await h.storage.index_add("Memes", -1009000000001, item, NOW)
+    entry = (await h.storage.index_pending())[-1]
+    await h.storage.index_done(
+        entry.id, text, media_text, speech_text, fold(f"{text}\n{media_text}\n{speech_text}")
+    )
+
+
+async def test_find_matches_every_word_in_text_or_pictures(h: Harness) -> None:
+    await h.storage.upsert_channel(CH, NOW)
+    await index(h, 1, "Рыжий КОТ спит на диване")
+    await index(h, 2, "", "Надпись: ёжик в тумане. На картинке кот и ёж.")
+    await index(h, 3, "Собака на диване", channel_id=-1002)
+
+    both = await h.bot.command("find", ["кот"])
+    assert both.count("📌") == 2
+    # newest first; the hit links to the source post and to its copy in the digest channel
+    assert both.index("https://t.me/a/1") < both.index("https://t.me/a/2")
+    assert "digest: https://t.me/c/9000000001/101" in both
+    assert "2026-10-15 01:00 · @a" in both
+    assert "Рыжий КОТ спит на диване" in both
+
+    one = await h.bot.command("find", ["Котом", "диван"])
+    assert one == "nothing found for: Котом диван"
+    one = await h.bot.command("find", ["ДИВАН", "кот"])
+    assert one.count("📌") == 1 and "https://t.me/a/1" in one
+
+    picture = await h.bot.command("find", ["ежик"])
+    assert "🖼 Надпись: ёжик в тумане" in picture
+    await index(h, 4, "Видео", speech_text="всем привет, сегодня про ёлку")
+    assert "🎙 всем привет, сегодня про ёлку" in await h.bot.command("find", ["елку"])
+    unknown_channel = await h.bot.command("find", ["собака"])
+    assert "· -1002\n" in unknown_channel and "https://t.me/c/2/3" in unknown_channel
+
+
+async def test_find_caps_hits_and_reports_the_total(h: Harness) -> None:
+    for i in range(1, 13):
+        await index(h, i, f"мем номер {i}")
+    reply = await h.bot.command("find", ["мем"])
+    assert reply.count("📌") == 10
+    assert reply.endswith("newest 10 of 12; add a word to narrow it down")
+    assert len(reply) < 4000
+
+
+async def test_find_snippet_is_cut_around_the_match(h: Harness) -> None:
+    await index(h, 1, "а " * 200 + "иголка" + " б" * 200)
+    reply = await h.bot.command("find", ["иголка"])
+    excerpt = reply.splitlines()[1]
+    assert excerpt.startswith("…") and excerpt.endswith("…") and "иголка" in excerpt
+    assert len(excerpt) <= 162
+
+
+async def test_find_without_words_shows_usage_and_stats(h: Harness) -> None:
+    await index(h, 1, "кот")
+    reply = await h.bot.command("find", [])
+    assert reply.startswith("/find <words>")
+    assert reply.endswith("indexed 1 posts")
+
+
+async def test_reindex_queues_delivered_posts_once(h: Harness) -> None:
+    await h.bot.command("folder", ["Memes", "batch=2"])
+    await h.bot.command("run", ["Memes"])
+    assert await h.bot.command("reindex", []) == "✅ 2 posts queued for indexing"
+    pending = await h.storage.index_pending()
+    assert [(e.folder, e.msg_ids, e.sent_msg_id is not None) for e in pending] == [
+        ("Memes", (1,), True),
+        ("Memes", (2,), True),
+    ]
+    await h.storage.index_fail(pending[0].id, "boom", final=True)
+    assert (await h.storage.index_counts())[IndexState.FAILED] == 1
+    assert await h.bot.command("reindex", []) == (
+        "✅ 0 posts queued for indexing, 1 failed ones retried"
+    )
+    assert len(await h.storage.index_pending()) == 2

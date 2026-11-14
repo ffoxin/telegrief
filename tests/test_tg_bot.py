@@ -45,7 +45,7 @@ class _Event:
     async def delete(self) -> None:
         self.deleted = True
 
-    async def respond(self, text: str) -> None:
+    async def respond(self, text: str, **kwargs: object) -> None:
         self.replies.append(text)
 
 
@@ -163,7 +163,7 @@ class _CommandEvent:
         self.raw_text = text
         self.replies: list[str] = []
 
-    async def respond(self, text: str) -> None:
+    async def respond(self, text: str, **kwargs: object) -> None:
         self.replies.append(text)
 
     async def delete(self) -> None:

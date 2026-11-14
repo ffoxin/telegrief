@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from datetime import datetime
 
-from telegrief.models import ChannelInfo, RawPost
+from telegrief.models import ChannelInfo, PostContent, RawPost
 from telegrief.tg.protocols import (
     ChannelUnavailable,
     CommandHandlerFn,
@@ -32,6 +32,9 @@ class FakeUser:
         self.posts: dict[int, list[RawPost]] = {}
         self.read_markers: dict[int, int] = {}
         self.media_bytes: dict[tuple[int, int], int] = {}
+        self.contents: dict[tuple[int, int], PostContent] = {}  # post_content results
+        self.content_fails: set[int] = set()  # post_content raises GatewayError with media
+        self.content_calls: list[tuple[int, list[int], bool, bool]] = []
         self.restricted: set[int] = set()  # forward_to_relay raises ForwardRestricted
         self.copy_fails: set[int] = set()  # copy_to_relay raises CopyFailed
         self.unavailable: set[int] = set()  # channel_info raises ChannelUnavailable
@@ -142,6 +145,22 @@ class FakeUser:
         self.copied.append((channel_id, list(msg_ids), caption_head))
         self._deliver_to_bot(len(msg_ids))
         return self._relay_ids(len(msg_ids))
+
+    async def post_content(
+        self, channel_id: int, msg_ids: list[int], *, images: bool, speech: bool
+    ) -> PostContent:
+        self._check_alive()
+        self.content_calls.append((channel_id, list(msg_ids), images, speech))
+        content = self.contents.get((channel_id, msg_ids[0]))
+        if content is None:
+            raise ChannelUnavailable("post not found")
+        if (images or speech) and channel_id in self.content_fails:
+            raise GatewayError("download failed")
+        return PostContent(
+            text=content.text,
+            images=content.images if images else (),
+            speech=content.speech if speech else (),
+        )
 
     async def read_marker(self, channel_id: int) -> int:
         if channel_id in self.marker_fails:

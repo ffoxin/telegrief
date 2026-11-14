@@ -16,6 +16,8 @@ from .models import (
     Delivery,
     Folder,
     FolderConfig,
+    IndexEntry,
+    IndexState,
     ItemState,
     QueueItem,
     RawPost,
@@ -90,6 +92,24 @@ def _queue_item_from_row(row: aiosqlite.Row) -> QueueItem:
         delivery=Delivery(row["delivery"]) if row["delivery"] else None,
         sent_msg_id=row["sent_msg_id"],
         sent_at=_dt(row["sent_at"]),
+    )
+
+
+def _index_entry_from_row(row: aiosqlite.Row) -> IndexEntry:
+    return IndexEntry(
+        id=row["id"],
+        folder=row["folder"],
+        channel_id=row["channel_id"],
+        msg_ids=tuple(json.loads(row["msg_ids"])),
+        date=_req_dt(row["date"]),
+        target=row["target"],
+        sent_msg_id=row["sent_msg_id"],
+        text=row["text"],
+        media_text=row["media_text"],
+        speech_text=row["speech_text"],
+        state=IndexState(row["state"]),
+        attempts=row["attempts"],
+        error=row["error"],
     )
 
 
@@ -502,3 +522,85 @@ class Storage:
             [(score, folder_id, channel_id, msg_id) for channel_id, msg_id, score in scores],
         )
         await self._conn.commit()
+
+    async def sent_items(self, folder_id: int) -> list[QueueItem]:
+        rows = await self._fetchall(
+            "SELECT * FROM queue WHERE folder_id = ? AND state = 'sent' ORDER BY sent_at, rowid",
+            (folder_id,),
+        )
+        return [_queue_item_from_row(r) for r in rows]
+
+    # ---- search index --------------------------------------------------------
+
+    async def index_add(self, folder: str, target: int, item: QueueItem, now: datetime) -> bool:
+        """Queue a delivered post for indexing; False if it is already in the index."""
+        cur = await self._conn.execute(
+            """
+            INSERT OR IGNORE INTO post_index
+                (folder, channel_id, msg_id, msg_ids, date, target, sent_msg_id, state,
+                 created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+            """,
+            (
+                folder,
+                item.channel_id,
+                item.msg_id,
+                json.dumps(list(item.msg_ids)),
+                item.date.isoformat(),
+                target,
+                item.sent_msg_id,
+                now.isoformat(),
+            ),
+        )
+        await self._conn.commit()
+        return cur.rowcount > 0
+
+    async def index_pending(self) -> list[IndexEntry]:
+        rows = await self._fetchall("SELECT * FROM post_index WHERE state = 'pending' ORDER BY id")
+        return [_index_entry_from_row(r) for r in rows]
+
+    async def index_done(
+        self, entry_id: int, text: str, media_text: str, speech_text: str, search: str
+    ) -> None:
+        await self._conn.execute(
+            """
+            UPDATE post_index SET state = 'done', text = ?, media_text = ?, speech_text = ?,
+                search = ?, error = NULL
+            WHERE id = ?
+            """,
+            (text, media_text, speech_text, search, entry_id),
+        )
+        await self._conn.commit()
+
+    async def index_fail(self, entry_id: int, error: str, *, final: bool) -> None:
+        """Count a failed attempt; ``final`` takes the entry out of the pending set."""
+        await self._conn.execute(
+            "UPDATE post_index SET attempts = attempts + 1, error = ?, state = ? WHERE id = ?",
+            (error, IndexState.FAILED if final else IndexState.PENDING, entry_id),
+        )
+        await self._conn.commit()
+
+    async def index_retry_failed(self) -> int:
+        cur = await self._conn.execute(
+            "UPDATE post_index SET state = 'pending', attempts = 0 WHERE state = 'failed'"
+        )
+        await self._conn.commit()
+        return int(cur.rowcount)
+
+    async def index_counts(self) -> dict[IndexState, int]:
+        rows = await self._fetchall("SELECT state, COUNT(*) AS n FROM post_index GROUP BY state")
+        counts = dict.fromkeys(IndexState, 0)
+        counts.update({IndexState(r["state"]): int(r["n"]) for r in rows})
+        return counts
+
+    async def index_search(self, needles: list[str], limit: int) -> tuple[list[IndexEntry], int]:
+        """Indexed posts containing every needle (already folded), newest first, and the total."""
+        where = "state = 'done'" + " AND instr(search, ?) > 0" * len(needles)
+        row = await self._fetchone(
+            f"SELECT COUNT(*) AS n FROM post_index WHERE {where}", tuple(needles)
+        )
+        rows = await self._fetchall(
+            f"SELECT * FROM post_index WHERE {where} ORDER BY date DESC, id DESC LIMIT ?",
+            (*needles, limit),
+        )
+        return [_index_entry_from_row(r) for r in rows], int(row["n"]) if row is not None else 0
