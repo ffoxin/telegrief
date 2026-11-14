@@ -224,3 +224,25 @@ async def test_rate_limit_pauses_the_pass_without_counting_attempts(storage: Sto
     h.transcriber.error = None
     assert await h.indexer.drain() == 2  # no cooldown: picked up on the next pass
     assert await h.found("сказано") == [2]
+
+
+async def test_indexing_outcomes_are_counted(storage: Storage) -> None:
+    h = Harness(storage)
+    await h.add(1, "Подпись", JPEG, speech=(b"one", b"two"))
+    await h.add(2, "нет поста")
+    del h.user.contents[(CH_ID, 2)]
+    h.transcriber.error = Untranscribable("bad audio")
+    await h.indexer.drain()
+    h.transcriber.error = Busy("slow down")
+    await h.add(3, "Видео", speech=(b"x",))
+    await h.indexer.drain()
+    assert {
+        f"{name}{sorted(labels.values())}": n for name, labels, n in await storage.counters()
+    } == {
+        "telegrief_indexed_posts_total['done']": 1,
+        "telegrief_indexed_posts_total['retry']": 1,
+        "telegrief_index_media_total['ok', 'pictures']": 1,
+        "telegrief_index_media_total['rejected', 'speech']": 2,
+        "telegrief_index_pauses_total[]": 1,
+    }
+    assert await storage.index_coverage() == {"text": 1, "pictures": 1, "speech": 0}

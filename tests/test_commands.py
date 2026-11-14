@@ -38,10 +38,10 @@ CH = ChannelInfo(
     noforwards=False,
 )
 MEMES_LINE = (
-    "Memes · 24/24h · batch 2 · per_view/200 · max 1000 · 7d · queued 0 · next 2026-10-15 02:00"
+    "Memes · 24/24h · batch 2 · per_view/200 · max 1000 · 90d · queued 0 · next 2026-10-15 02:00"
 )
 NEWS_LINE = (
-    "My News · 24/24h · batch 10 · per_view/200 · max 1000 · 7d · queued 0 · next 2026-10-15 02:00"
+    "My News · 24/24h · batch 10 · per_view/200 · max 1000 · 90d · queued 0 · next 2026-10-15 02:00"
 )
 
 

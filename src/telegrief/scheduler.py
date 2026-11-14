@@ -18,6 +18,7 @@ from .config import Settings
 from .delivery import Deliverer
 from .digest import DigestService
 from .indexer import Indexer
+from .metrics import MetricsWriter
 from .speech import GroqTranscriber
 from .storage import Storage
 from .targets import TargetResolver
@@ -218,6 +219,10 @@ async def serve(settings: Settings) -> None:
         asyncio.create_task(bot.run_until_disconnected(), name="bot"),
         asyncio.create_task(stop.wait(), name="fatal"),
     ]
+    if settings.metrics_file is not None:
+        writer = MetricsWriter(storage, settings.metrics_file)
+        tasks.append(asyncio.create_task(writer.run(), name="metrics"))
+        logger.info("metrics written to {}", settings.metrics_file)
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:

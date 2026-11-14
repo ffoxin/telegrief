@@ -116,7 +116,7 @@ class FolderConfig(BaseModel):
     scoring: Scoring = "per_view"
     min_denominator: int = Field(default=200, ge=1)
     max_items: int = Field(default=1000, ge=1)
-    max_age_d: int = Field(default=7, ge=1)
+    max_age_d: int = Field(default=90, ge=1)
 
     @model_validator(mode="after")
     def _max_age_covers_window(self) -> FolderConfig:

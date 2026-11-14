@@ -52,8 +52,8 @@ def scored(
 
 
 async def test_migrate_is_idempotent(storage: Storage) -> None:
-    assert await storage.migrate() == 4
-    assert await storage.migrate() == 4
+    assert await storage.migrate() == 6
+    assert await storage.migrate() == 6
 
 
 async def test_migration_002_keeps_targets(tmp_path: Path) -> None:
@@ -266,9 +266,9 @@ async def test_pending_items_order_and_limit(storage: Storage) -> None:
     assert [i.msg_id for i in await storage.pending_items(folder.id, limit=2)] == [4, 3]
 
 
-async def test_prune_drops_old_posts_in_any_state_and_caps_pending(storage: Storage) -> None:
+async def test_prune_drops_old_undelivered_posts_and_caps_pending(storage: Storage) -> None:
     folder = await storage.create_folder("Memes", FolderConfig(max_items=2), NOW)
-    old = NOW - timedelta(days=8)
+    old = NOW - timedelta(days=91)
     await storage.enqueue(
         folder.id,
         [
@@ -286,7 +286,10 @@ async def test_prune_drops_old_posts_in_any_state_and_caps_pending(storage: Stor
     await storage.update_item(sent_old)
     await storage.prune(folder.id, folder.config, NOW)
     assert [i.msg_id for i in await storage.pending_items(folder.id)] == [3, 4]
-    assert await storage.count_items(folder.id, ItemState.SENT) == 0
+    # the delivered one stays however old, so it is never delivered again
+    assert [i.msg_id for i in await storage.sent_items(folder.id)] == [1]
+    assert await storage.enqueue(folder.id, [scored(1, 0.9, date=old)], NOW) == 0
+    assert await storage.count_items(folder.id, ItemState.SENT) == 1
 
 
 async def test_prune_keeps_sent_rows_within_age(storage: Storage) -> None:

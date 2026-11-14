@@ -47,7 +47,7 @@ COMMANDS: tuple[Command, ...] = (
         "scoring — per_view | per_subscriber | raw [per_view]\n"
         "min_denominator — floor for views / subscribers when scoring [200]\n"
         "max_items — queue cap, lowest scores dropped first [1000]\n"
-        "max_age — days a post may wait in the queue [7]\n"
+        "max_age — days an undelivered post may wait in the queue [90]\n"
         "target — id of an existing channel to post digests to (bot must be admin)\n"
         "next — HH:MM (in TZ) or now: when the next fetch runs\n"
         "\n"
@@ -80,9 +80,9 @@ COMMANDS: tuple[Command, ...] = (
         "reindex",
         "/reindex",
         "index delivered posts missing from the search index",
-        "Queues every delivered post still in a queue that is not in the search index, "
-        "and retries the ones that failed. Posts are indexed on delivery; use this once "
-        "for posts delivered before the index existed.",
+        "Queues every delivered post that is not in the search index, and retries the "
+        "ones that failed. Posts are indexed on delivery; use this once for posts "
+        "delivered before the index existed.",
     ),
     Command(
         "skip",

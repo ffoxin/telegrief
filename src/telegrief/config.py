@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     # Transcribes speech in videos and audio for the search index.
     groq_api_key: str | None = None
     stt_model: str = "whisper-large-v3"
+    # Prometheus text file for node-exporter's textfile collector; unset: no metrics.
+    metrics_file: Path | None = None
     data_dir: Path = Path("/app/data")
     log_level: str = "INFO"
 

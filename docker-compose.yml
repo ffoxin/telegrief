@@ -15,6 +15,9 @@ services:
     environment:
       - TZ=UTC
       - LOG_LEVEL=INFO
+      # Metrics for Grafana: a Prometheus text file for node-exporter's textfile
+      # collector. Uncomment with the volume below.
+      # - METRICS_FILE=/app/metrics/telegrief.prom
     secrets:
       - tg_api_id
       - tg_api_hash
@@ -23,6 +26,7 @@ services:
       - groq_api_key
     volumes:
       - ./.data:/app/data
+      # - ../node-monitor/textfile:/app/metrics
     healthcheck:
       test:
         [

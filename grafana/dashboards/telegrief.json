@@ -1,0 +1,1352 @@
+{
+  "uid": "telegrief-overview",
+  "title": "telegrief",
+  "tags": [
+    "telegrief"
+  ],
+  "schemaVersion": 39,
+  "editable": false,
+  "refresh": "1m",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "templating": {
+    "list": [
+      {
+        "name": "folder",
+        "label": "Folder",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "infra-metrics"
+        },
+        "query": {
+          "query": "label_values(telegrief_queue_posts, folder)",
+          "refId": "folder"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "id": 1,
+      "title": "Waiting in the pool",
+      "description": "Posts fetched and not delivered yet.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "sum(telegrief_queue_posts{folder=~\"$folder\",state=\"pending\"})",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "id": 2,
+      "title": "Delivered, unread",
+      "description": "Posts in the digest channels your read marker has not passed.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "sum(telegrief_queue_posts{folder=~\"$folder\",state=\"unread\"})",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "orange",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "id": 3,
+      "title": "Indexed",
+      "description": "Posts /find can return.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "telegrief_index_posts{state=\"done\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "id": 4,
+      "title": "Index waiting",
+      "description": "Delivered posts not indexed yet (includes ones being retried).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "telegrief_index_posts{state=\"pending\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "id": 5,
+      "title": "Index failed",
+      "description": "Given up after 4 attempts; /reindex retries them.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "telegrief_index_posts{state=\"failed\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "id": 6,
+      "title": "Metrics age",
+      "description": "Seconds since telegrief last wrote its metrics; large means it is down.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "time() - telegrief_metrics_timestamp_seconds",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 120
+              },
+              {
+                "color": "red",
+                "value": 600
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "table",
+      "id": 7,
+      "title": "Folders",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "max by (folder) (telegrief_folder_timestamp_seconds{folder=~\"$folder\",event=\"last_fetch\"}) * 1000",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "max by (folder) (telegrief_folder_timestamp_seconds{folder=~\"$folder\",event=\"next_fetch\"}) * 1000",
+          "legendFormat": "",
+          "refId": "B",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "max by (folder) (telegrief_folder_timestamp_seconds{folder=~\"$folder\",event=\"last_batch\"}) * 1000",
+          "legendFormat": "",
+          "refId": "C",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "sum by (folder) (telegrief_queue_posts{folder=~\"$folder\",state=\"pending\"})",
+          "legendFormat": "",
+          "refId": "D",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "max by (folder) (telegrief_folder_fetch_failing{folder=~\"$folder\"})",
+          "legendFormat": "",
+          "refId": "E",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "folder",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true,
+              "Time 4": true,
+              "Time 5": true
+            },
+            "renameByName": {
+              "folder": "Folder",
+              "Value #A": "Last fetch",
+              "Value #B": "Next fetch",
+              "Value #C": "Last batch",
+              "Value #D": "Waiting",
+              "Value #E": "Fetch failing"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "Last fetch|Next fetch|Last batch"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Fetch failing"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "no",
+                        "color": "green"
+                      },
+                      "1": {
+                        "text": "YES",
+                        "color": "red"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "type": "row",
+      "id": 8,
+      "title": "Pool: what each fetch brings",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 9,
+      "title": "Posts added to the pool per fetch",
+      "description": "New posts each fetch put into the queue. One bar is one hour, so a bar is one fetch unless two folders fetch in the same hour (they stack).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "sum by (folder) (increase(telegrief_fetch_posts_total{folder=~\"$folder\",outcome=\"added\"}[$__interval]))",
+          "legendFormat": "{{folder}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never",
+            "axisSoftMin": 0,
+            "fillOpacity": 60,
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "interval": "1h"
+    },
+    {
+      "type": "timeseries",
+      "id": 10,
+      "title": "What fetches collected",
+      "description": "added: new in the queue. known: already queued or delivered. skipped: dropped by a skip phrase.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "sum by (outcome) (increase(telegrief_fetch_posts_total{folder=~\"$folder\"}[$__interval]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never",
+            "axisSoftMin": 0,
+            "fillOpacity": 60,
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "interval": "1h"
+    },
+    {
+      "type": "timeseries",
+      "id": 11,
+      "title": "Pool size",
+      "description": "Posts waiting for delivery. Drops are batches going out and posts ageing past max_age.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "sum by (folder) (telegrief_queue_posts{folder=~\"$folder\",state=\"pending\"})",
+          "legendFormat": "{{folder}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never",
+            "axisSoftMin": 0,
+            "fillOpacity": 15,
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 12,
+      "title": "Fetches",
+      "description": "Fetch runs, successful and failed.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "sum by (result) (increase(telegrief_fetches_total{folder=~\"$folder\"}[$__interval]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never",
+            "axisSoftMin": 0,
+            "fillOpacity": 60,
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "interval": "1h"
+    },
+    {
+      "type": "row",
+      "id": 13,
+      "title": "Reading: what was delivered and read, and when",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 14,
+      "title": "Posts read",
+      "description": "Delivered posts your read marker passed, per hour.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "sum by (folder) (increase(telegrief_read_posts_total{folder=~\"$folder\"}[$__interval]))",
+          "legendFormat": "{{folder}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never",
+            "axisSoftMin": 0,
+            "fillOpacity": 60,
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "interval": "1h"
+    },
+    {
+      "type": "timeseries",
+      "id": 15,
+      "title": "Posts delivered",
+      "description": "Posts sent to the digest channels, by how: forward, copy (protected source), link (fallback), failed (not delivered).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 28
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "sum by (delivery) (increase(telegrief_delivered_posts_total{folder=~\"$folder\"}[$__interval]))",
+          "legendFormat": "{{delivery}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never",
+            "axisSoftMin": 0,
+            "fillOpacity": 60,
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "interval": "1h"
+    },
+    {
+      "type": "timeseries",
+      "id": 16,
+      "title": "Delivered and not read yet",
+      "description": "The backlog in the digest channels.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "sum by (folder) (telegrief_queue_posts{folder=~\"$folder\",state=\"unread\"})",
+          "legendFormat": "{{folder}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never",
+            "axisSoftMin": 0,
+            "fillOpacity": 15,
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 17,
+      "title": "Batches",
+      "description": "auto: sent because the previous batch was read. manual: the Next button.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 36
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "sum by (trigger) (increase(telegrief_batches_total{folder=~\"$folder\"}[$__interval]))",
+          "legendFormat": "{{trigger}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never",
+            "axisSoftMin": 0,
+            "fillOpacity": 60,
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "interval": "1h"
+    },
+    {
+      "type": "row",
+      "id": 18,
+      "title": "Search index: how indexing is going",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 19,
+      "title": "Index entries by state",
+      "description": "done: searchable. pending: waiting or being retried. failed: given up.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 46
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "telegrief_index_posts",
+          "legendFormat": "{{state}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never",
+            "axisSoftMin": 0,
+            "fillOpacity": 15,
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 20,
+      "title": "Indexing attempts",
+      "description": "done: indexed. retry: failed, will be tried again in 10 min. failed: 4th failure, given up.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 46
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "sum by (result) (increase(telegrief_indexed_posts_total[$__interval]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never",
+            "axisSoftMin": 0,
+            "fillOpacity": 60,
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "interval": "1h"
+    },
+    {
+      "type": "timeseries",
+      "id": 21,
+      "title": "Pictures and speech",
+      "description": "Claude calls for pictures (one per post) and Groq calls for sound clips. rejected: the service refused that input; the post is indexed without it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 54
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "sum by (kind, result) (increase(telegrief_index_media_total[$__interval]))",
+          "legendFormat": "{{kind}} {{result}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never",
+            "axisSoftMin": 0,
+            "fillOpacity": 60,
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "interval": "1h"
+    },
+    {
+      "type": "timeseries",
+      "id": 22,
+      "title": "Rate-limit pauses",
+      "description": "Indexing passes stopped by an Anthropic or Groq rate limit. Indexing resumes by itself within 10 minutes.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 54
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "sum(increase(telegrief_index_pauses_total[$__interval]))",
+          "legendFormat": "pauses",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never",
+            "axisSoftMin": 0,
+            "fillOpacity": 60,
+            "drawStyle": "bars",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "interval": "1h"
+    },
+    {
+      "type": "timeseries",
+      "id": 23,
+      "title": "What indexed posts contain",
+      "description": "Indexed posts with their own text, with a picture description, with a transcript.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 54
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "telegrief_index_posts_with",
+          "legendFormat": "{{content}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never",
+            "axisSoftMin": 0,
+            "fillOpacity": 15,
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    }
+  ]
+}

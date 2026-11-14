@@ -148,6 +148,15 @@ class DigestService:
             skipped = len(collected.posts) - len(kept)
             scored = rank(kept, collected.channels, cfg)
             added = await self._storage.enqueue(folder.id, scored, now)
+            for outcome, n in (
+                ("added", added),
+                ("known", len(kept) - added),
+                ("skipped", skipped),
+            ):
+                if n:
+                    await self._storage.count(
+                        "telegrief_fetch_posts_total", n, folder=folder.name, outcome=outcome
+                    )
             await self._storage.prune(folder.id, cfg, now)
             pending = await self._storage.count_pending(folder.id)
             folder.last_fetch_at = now
@@ -162,9 +171,11 @@ class DigestService:
             return message
         except Exception as exc:
             logger.exception("folder {}: fetch failed", folder.name)
+            await self._storage.count("telegrief_fetches_total", folder=folder.name, result="error")
             message = f"❌ {folder.name}: {exc}"
             await self._report_failure(folder.id, str(exc), message, scheduled)
             return message
+        await self._storage.count("telegrief_fetches_total", folder=folder.name, result="ok")
         message = f"✅ {folder.name}: +{added} · {pending} queued"
         if skipped:
             message += f" · 🚫 {skipped} skipped"
@@ -308,6 +319,11 @@ class DigestService:
                 item.sent_msg_id = last_id
                 item.sent_at = now
             await self._storage.update_item(item)
+            await self._storage.count(
+                "telegrief_delivered_posts_total",
+                folder=folder.name,
+                delivery=str(item.delivery) if item.delivery is not None else "failed",
+            )
             if item.state == ItemState.SENT:
                 await self._index(folder, target, item)
         pending = await self._storage.count_pending(folder.id)
@@ -323,6 +339,9 @@ class DigestService:
         folder.fetch_added = 0
         folder.last_batch_at = now
         await self._storage.update_folder_state(folder)
+        await self._storage.count(
+            "telegrief_batches_total", folder=folder.name, trigger="manual" if manual else "auto"
+        )
         return len(items)
 
     async def _index(self, folder: Folder, target: int, item: QueueItem) -> None:
@@ -405,7 +424,11 @@ class DigestService:
         folder = await self._storage.folder_for_target(channel_id)
         if folder is None:
             return
-        wait = await self._next_due(folder, max_id, self._clock())
+        now = self._clock()
+        read = await self._storage.mark_read(folder.id, max_id, now)
+        if read:
+            await self._storage.count("telegrief_read_posts_total", read, folder=folder.name)
+        wait = await self._next_due(folder, max_id, now)
         if wait is None:
             return
         if wait <= 0:

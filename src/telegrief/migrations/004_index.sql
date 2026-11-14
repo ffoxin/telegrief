@@ -1,4 +1,4 @@
--- Search index of delivered posts. Kept apart from the queue so entries outlive max_age.
+-- Search index of delivered posts. Kept apart from the queue so entries outlive their folder.
 CREATE TABLE post_index (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     folder TEXT NOT NULL,

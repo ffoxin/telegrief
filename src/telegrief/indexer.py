@@ -80,6 +80,7 @@ class Indexer:
                 done += await self._index(entry)
             except Busy as exc:
                 logger.info("indexing paused, {} posts done this pass: {}", done, exc)
+                await self._storage.count("telegrief_index_pauses_total")
                 break
         return done
 
@@ -98,15 +99,19 @@ class Indexer:
             if content.images and describer is not None:
                 try:
                     media_text = await describer.describe(content.images, content.text)
+                    await self._media("pictures", "ok")
                 except Undescribable as exc:
                     logger.info("{}/{}: pictures skipped: {}", entry.channel_id, entry.msg_id, exc)
+                    await self._media("pictures", "rejected")
             spoken: list[str] = []
             if transcriber is not None:
                 for clip in content.speech:
                     try:
                         spoken.append(await transcriber.transcribe(clip))
+                        await self._media("speech", "ok")
                     except Untranscribable as exc:
                         logger.info("{}/{}: sound skipped: {}", entry.channel_id, entry.msg_id, exc)
+                        await self._media("speech", "rejected")
             speech_text = " ".join(s for s in spoken if s)
         except (SessionDead, Busy):
             raise
@@ -119,6 +124,9 @@ class Indexer:
                 exc,
             )
             await self._storage.index_fail(entry.id, str(exc), final=last)
+            await self._storage.count(
+                "telegrief_indexed_posts_total", result="failed" if last else "retry"
+            )
             self._retry_at[entry.id] = self._monotonic() + self._retry_s
             return False
         await self._storage.index_done(
@@ -129,7 +137,11 @@ class Indexer:
             fold(f"{content.text}\n{media_text}\n{speech_text}"),
         )
         self._retry_at.pop(entry.id, None)
+        await self._storage.count("telegrief_indexed_posts_total", result="done")
         return True
+
+    async def _media(self, kind: str, result: str) -> None:
+        await self._storage.count("telegrief_index_media_total", kind=kind, result=result)
 
     async def run(self) -> None:
         while True:

@@ -448,10 +448,15 @@ class Storage:
         return await self._count_rows(folder_id) - before
 
     async def prune(self, folder_id: int, cfg: FolderConfig, now: datetime) -> None:
-        """Drop posts older than max_age (any state), then cap pending rows to max_items."""
+        """Drop undelivered posts older than max_age, then cap pending rows to max_items.
+
+        Delivered posts are never dropped: they keep a post from being delivered twice
+        and let /reindex reach it.
+        """
         cutoff = (now - timedelta(days=cfg.max_age_d)).isoformat()
         await self._conn.execute(
-            "DELETE FROM queue WHERE folder_id = ? AND date < ?", (folder_id, cutoff)
+            "DELETE FROM queue WHERE folder_id = ? AND state != 'sent' AND date < ?",
+            (folder_id, cutoff),
         )
         await self._conn.execute(
             f"""
@@ -604,3 +609,59 @@ class Storage:
             (*needles, limit),
         )
         return [_index_entry_from_row(r) for r in rows], int(row["n"]) if row is not None else 0
+
+    # ---- metrics -------------------------------------------------------------
+
+    async def count(self, name: str, by: float = 1, **labels: str) -> None:
+        """Add ``by`` to the persistent counter ``name{labels}``."""
+        await self._conn.execute(
+            """
+            INSERT INTO counters (name, labels, value) VALUES (?, ?, ?)
+            ON CONFLICT(name, labels) DO UPDATE SET value = value + excluded.value
+            """,
+            (name, json.dumps(labels, sort_keys=True, ensure_ascii=False), by),
+        )
+        await self._conn.commit()
+
+    async def counters(self) -> list[tuple[str, dict[str, str], float]]:
+        rows = await self._fetchall(
+            "SELECT name, labels, value FROM counters ORDER BY name, labels"
+        )
+        return [(str(r["name"]), json.loads(r["labels"]), float(r["value"])) for r in rows]
+
+    async def mark_read(self, folder_id: int, max_id: int, now: datetime) -> int:
+        """Stamp delivered posts the read marker has passed; returns how many are new."""
+        cur = await self._conn.execute(
+            """
+            UPDATE queue SET read_at = ?
+            WHERE folder_id = ? AND state = 'sent' AND read_at IS NULL AND sent_msg_id <= ?
+            """,
+            (now.isoformat(), folder_id, max_id),
+        )
+        await self._conn.commit()
+        return int(cur.rowcount)
+
+    async def queue_counts(self) -> dict[tuple[int, str], int]:
+        """Rows per (folder id, state); delivered posts not read yet count as ``unread``."""
+        rows = await self._fetchall(
+            """
+            SELECT folder_id,
+                   CASE WHEN state = 'sent' AND read_at IS NULL THEN 'unread' ELSE state END AS s,
+                   COUNT(*) AS n
+            FROM queue GROUP BY folder_id, s
+            """
+        )
+        return {(int(r["folder_id"]), str(r["s"])): int(r["n"]) for r in rows}
+
+    async def index_coverage(self) -> dict[str, int]:
+        """Indexed posts that have text, a picture description, a transcript."""
+        row = await self._fetchone(
+            """
+            SELECT COALESCE(SUM(text != ''), 0) AS text,
+                   COALESCE(SUM(media_text != ''), 0) AS pictures,
+                   COALESCE(SUM(speech_text != ''), 0) AS speech
+            FROM post_index WHERE state = 'done'
+            """
+        )
+        assert row is not None
+        return {key: int(row[key]) for key in ("text", "pictures", "speech")}

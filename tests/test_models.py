@@ -12,7 +12,7 @@ def test_folder_config_defaults() -> None:
     cfg = FolderConfig()
     assert (cfg.min_age_h, cfg.period_h, cfg.batch_size) == (24, 24, 10)
     assert cfg.scoring == "per_view"
-    assert (cfg.min_denominator, cfg.max_items, cfg.max_age_d) == (200, 1000, 7)
+    assert (cfg.min_denominator, cfg.max_items, cfg.max_age_d) == (200, 1000, 90)
 
 
 def test_folder_config_window() -> None:

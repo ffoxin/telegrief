@@ -524,3 +524,48 @@ async def test_delivered_posts_are_queued_for_the_search_index(h: Harness) -> No
     assert sorted((e.channel_id, e.msg_ids, e.target, e.sent_msg_id) for e in pending) == sorted(
         (i.channel_id, i.msg_ids, h.target, i.sent_msg_id) for i in sent
     )
+
+
+async def counters(h: Harness) -> dict[str, float]:
+    found: dict[str, float] = {}
+    for name, labels, value in await h.storage.counters():
+        rest = sorted(v for k, v in labels.items() if k != "folder")
+        found[f"{name.removeprefix('telegrief_')}{rest}"] = value
+    return found
+
+
+async def test_fetch_delivery_and_reads_are_counted(h: Harness) -> None:
+    await h.storage.add_skip("#реклама")
+    h.add_posts(5)
+    h.user.posts[CH_ID][4] = replace(h.user.posts[CH_ID][4], text="#реклама")
+    await h.fetch()  # +4, first batch of 2 goes out
+    await h.fetch()  # the 2 still pending are known; the 2 sent are left alone
+    assert await counters(h) == {
+        "fetches_total['ok']": 2,
+        "fetch_posts_total['added']": 4,
+        "fetch_posts_total['known']": 4,
+        "fetch_posts_total['skipped']": 2,
+        "delivered_posts_total['forward']": 2,
+        "batches_total['auto']": 1,
+    }
+    assert await h.storage.queue_counts() == {(h.fid, "pending"): 2, (h.fid, "unread"): 2}
+
+    await h.user.emit_read(h.target, 2)  # first post of the batch
+    await h.user.emit_read(h.target, 2)  # the same marker again adds nothing
+    assert (await counters(h))["read_posts_total[]"] == 1
+    assert await h.storage.queue_counts() == {
+        (h.fid, "pending"): 2,
+        (h.fid, "unread"): 1,
+        (h.fid, "sent"): 1,
+    }
+
+    h.clock.advance(300)
+    await h.bot.press_next(h.fid)
+    seen = await counters(h)
+    assert seen["batches_total['manual']"] == 1 and seen["delivered_posts_total['forward']"] == 4
+
+
+async def test_failed_fetch_is_counted(h: Harness) -> None:
+    del h.user.folders["Memes"]
+    await h.fetch()
+    assert await counters(h) == {"fetches_total['error']": 1}
