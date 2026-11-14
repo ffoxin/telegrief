@@ -9,6 +9,8 @@ into a private digest channel the service creates for you, best post first,
 whichever fetch it came from; the next batch arrives once you have read most
 (90%) of the previous one, or when you press **Next**. Posts wait in the
 queue up to `max_age` days, so a few days away never cost you the best ones.
+Every delivered post is indexed, pictures and speech included, so `/find`
+gets it back later by a few words.
 
 Design: `docs/superpowers/specs/2026-10-15-telegrief-design.md` and
 `docs/superpowers/specs/2026-10-16-queue-design.md`.
@@ -19,6 +21,8 @@ Design: `docs/superpowers/specs/2026-10-15-telegrief-design.md` and
   the Bot API cannot). Get `api_id` / `api_hash` at https://my.telegram.org.
 - A bot token from @BotFather (the bot posts into digest channels and talks
   to you).
+- Optionally an Anthropic API key and a Groq API key, to make pictures and
+  speech searchable (see [Search](#search)).
 - Docker with compose.
 
 ## Setup
@@ -29,6 +33,8 @@ mkdir -p secrets .data
 echo 123456 > secrets/tg_api_id.txt
 echo your_api_hash > secrets/tg_api_hash.txt
 echo 123456:bot_token > secrets/bot_token.txt
+echo sk-ant-... > secrets/anthropic_api_key.txt   # or `touch` it: pictures not indexed
+echo gsk_... > secrets/groq_api_key.txt           # or `touch` it: speech not indexed
 docker compose pull
 docker compose run --rm -it app telegrief login   # phone, code, 2FA once
 docker compose up -d
@@ -60,6 +66,11 @@ service resolved, `/status` the queue.
   folder's `min_age` / `period`, e.g. `/run Memes 24 0` for the last 24 hours.
 - `/status` — last fetch, queue size, last batch, next fetch and the last
   error per folder.
+- `/find <words>` — delivered posts containing every word, newest first (10
+  at most), each with an excerpt and links to the original post and to its
+  copy in the digest channel. `/find` alone shows how many posts are indexed.
+- `/reindex` — index the delivered posts that are not in the search index yet
+  and retry the failed ones.
 - `/skip [phrase]` — list the skip phrases, or add one (spaces allowed). A
   post whose text contains a skip phrase anywhere, in any case, is never
   queued; applies to fetches from then on. `/unskip <phrase>` removes one.
@@ -90,13 +101,39 @@ and, if the last batch is already read, the next batch right away.
 A scheduled fetch that fails sends you one message per distinct error;
 `/status` shows the last error until a fetch succeeds.
 
+## Search
+
+A post is indexed in the background right after it is delivered; nothing is
+ever posted to the digest channel for it. The index holds the post's text
+and two optional parts:
+
+- **Pictures**, when `ANTHROPIC_API_KEY` is set: what Claude reads off them,
+  the text on them and a sentence or two about what they show. Every picture
+  of an album is read.
+- **Speech**, when `GROQ_API_KEY` is set: what Groq's Whisper hears in videos,
+  round videos, voice messages and audio files. ffmpeg cuts out the first
+  2 minutes of sound; files over 50 MB, GIFs and muted videos are skipped.
+  The picture of a video is not looked at.
+
+Entries outlive the queue, so a post stays findable after `max_age`.
+
+A word matches anywhere inside the indexed text, ignoring case and ё/е, so
+`/find кот` also finds `котом`. A post that cannot be read is retried every
+10 minutes, four times; the last try leaves pictures and sound out so the
+text is still indexed. Posts delivered before the index existed are added by
+`/reindex`, as far as they are still in a queue.
+
 ## Configuration
 
 Environment (compose `environment:` or `/run/secrets/<name>` files):
 `TG_API_ID`, `TG_API_HASH`, `BOT_TOKEN`, `TZ` (UTC; used for `next=` and for
 times in replies), `AUTO_NEXT_MIN_INTERVAL_S` (120), `AUTO_NEXT_READ_FRACTION`
 (0.9, share of a batch you must read before the next one is sent
-automatically), `MAX_COPY_MB` (200), `DATA_DIR` (`/app/data`), `LOG_LEVEL`
+automatically), `MAX_COPY_MB` (200), `ANTHROPIC_API_KEY`
+(unset or empty: pictures are not indexed), `INDEX_MODEL` (`claude-haiku-5-5`),
+`GROQ_API_KEY` (unset or empty: speech is not indexed), `STT_MODEL`
+(`whisper-large-v3`),
+`DATA_DIR` (`/app/data`), `LOG_LEVEL`
 (INFO). Everything per folder is set with `/folder` and stored in the SQLite
 database under `DATA_DIR`.
 
