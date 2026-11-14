@@ -12,6 +12,7 @@ from loguru import logger
 
 from .collector import Collector, digest_targets, drop_skipped
 from .config import Settings
+from .dedup import Deduper, Duplicate, Signature
 from .delivery import Deliverer, render_fetch_note, render_footer
 from .indexer import Indexer
 from .models import ChannelInfo, Folder, ItemState, QueueItem
@@ -63,8 +64,10 @@ class DigestService:
         defer: Deferrer = _asyncio_defer,
         on_fatal: Callable[[Exception], None] | None = None,
         indexer: Indexer | None = None,
+        deduper: Deduper | None = None,
     ) -> None:
         self._indexer = indexer
+        self._deduper = deduper
         self._user = user
         self._bot = bot
         self._storage = storage
@@ -276,7 +279,9 @@ class DigestService:
         return elapsed < self._settings.auto_next_min_interval_s
 
     async def send_batch(self, folder_id: int, *, manual: bool = False) -> int:
-        """Deliver the next batch of pending items. Returns how many were attempted.
+        """Deliver the next batch of pending items, dropping the duplicates on the way.
+
+        Returns how many deliveries were attempted.
 
         Automatic sends (read marker) re-check pacing under the lock, so two
         triggers that both passed the pre-check collapse into one batch.
@@ -296,39 +301,58 @@ class DigestService:
         if not manual and self._too_soon(folder, now):
             return 0
         await self._storage.prune(folder.id, cfg, now)
-        items = await self._storage.pending_items(folder.id, cfg.batch_size)
-        if not items:
-            return 0
+        known: list[Signature] | None = None
+        if self._deduper is not None and cfg.dedup:
+            known = await self._deduper.known(folder.id)
         channels: dict[int, ChannelInfo] = {}
-        for item in items:
-            channel = channels.get(item.channel_id)
-            if channel is None:
-                channel = channels[item.channel_id] = await self._channel(item.channel_id, now)
-            try:
-                kind, last_id = await self._deliverer.deliver(target, item, channel)
-            except (TargetUnavailable, SessionDead):
-                raise
-            except Exception:
-                logger.exception(
-                    "folder {}: {}/{} failed", folder.name, item.channel_id, item.msg_id
+        attempted: list[QueueItem] = []
+        duplicates = 0
+        # A dropped duplicate frees its place, so the queue is read until the batch is full.
+        while len(attempted) < cfg.batch_size:
+            items = await self._storage.pending_items(folder.id, cfg.batch_size - len(attempted))
+            if not items:
+                break
+            for item in items:
+                signature: Signature | None = None
+                if self._deduper is not None and known is not None:
+                    signature, duplicate = await self._deduper.check(folder.id, item, known)
+                    if duplicate is not None:
+                        await self._drop_duplicate(folder, item, duplicate, now)
+                        duplicates += 1
+                        continue
+                attempted.append(item)
+                channel = channels.get(item.channel_id)
+                if channel is None:
+                    channel = channels[item.channel_id] = await self._channel(item.channel_id, now)
+                try:
+                    kind, last_id = await self._deliverer.deliver(target, item, channel)
+                except (TargetUnavailable, SessionDead):
+                    raise
+                except Exception:
+                    logger.exception(
+                        "folder {}: {}/{} failed", folder.name, item.channel_id, item.msg_id
+                    )
+                    item.state = ItemState.FAILED
+                else:
+                    item.state = ItemState.SENT
+                    item.delivery = kind
+                    item.sent_msg_id = last_id
+                    item.sent_at = now
+                await self._storage.update_item(item)
+                await self._storage.count(
+                    "telegrief_delivered_posts_total",
+                    folder=folder.name,
+                    delivery=str(item.delivery) if item.delivery is not None else "failed",
                 )
-                item.state = ItemState.FAILED
-            else:
-                item.state = ItemState.SENT
-                item.delivery = kind
-                item.sent_msg_id = last_id
-                item.sent_at = now
-            await self._storage.update_item(item)
-            await self._storage.count(
-                "telegrief_delivered_posts_total",
-                folder=folder.name,
-                delivery=str(item.delivery) if item.delivery is not None else "failed",
-            )
-            if item.state == ItemState.SENT:
-                await self._index(folder, target, item)
+                if item.state == ItemState.SENT:
+                    await self._index(folder, target, item)
+                    if self._deduper is not None and known is not None and signature is not None:
+                        await self._deduper.remember(folder.id, signature, known)
+        if not attempted and not duplicates:
+            return 0
         pending = await self._storage.count_pending(folder.id)
-        sent = [i for i in items if i.state == ItemState.SENT]
-        text = render_footer(sent, channels, cfg, pending)
+        sent = [i for i in attempted if i.state == ItemState.SENT]
+        text = render_footer(sent, channels, cfg, pending, duplicates)
         await self._drop_button(folder, target)
         next_id = folder.id if pending else None
         msg_id = await self._bot.send_text(
@@ -337,12 +361,35 @@ class DigestService:
         self._hold_button(folder, msg_id, text, next_id)
         folder.fetch_msg_id = None
         folder.fetch_added = 0
-        folder.last_batch_at = now
+        if attempted:
+            # a batch of nothing but duplicates leaves the previous one to pace the next
+            folder.last_batch_at = now
         await self._storage.update_folder_state(folder)
+        if attempted:
+            await self._storage.count(
+                "telegrief_batches_total",
+                folder=folder.name,
+                trigger="manual" if manual else "auto",
+            )
+        return len(attempted)
+
+    async def _drop_duplicate(
+        self, folder: Folder, item: QueueItem, duplicate: Duplicate, now: datetime
+    ) -> None:
+        item.state = ItemState.DUPLICATE
+        await self._storage.mark_duplicate(item, duplicate.of, now)
         await self._storage.count(
-            "telegrief_batches_total", folder=folder.name, trigger="manual" if manual else "auto"
+            "telegrief_duplicate_posts_total", folder=folder.name, match=duplicate.by
         )
-        return len(items)
+        logger.info(
+            "folder {}: {}/{} dropped, same {} as {}/{}",
+            folder.name,
+            item.channel_id,
+            item.msg_id,
+            duplicate.by,
+            duplicate.of.channel_id,
+            duplicate.of.msg_id,
+        )
 
     async def _index(self, folder: Folder, target: int, item: QueueItem) -> None:
         """Hand a delivered post to the search index; never fails the batch."""

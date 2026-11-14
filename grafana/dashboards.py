@@ -320,13 +320,23 @@ def build() -> dict:
         ),
         series(
             "Posts delivered",
-            [tgt(increase(f"telegrief_delivered_posts_total{{{F}}}", "delivery"), "{{delivery}}")],
+            [
+                tgt(
+                    increase(f"telegrief_delivered_posts_total{{{F}}}", "delivery"), "{{delivery}}"
+                ),
+                tgt(
+                    f"sum(increase(telegrief_duplicate_posts_total{{{F}}}[$__interval]))",
+                    "duplicate",
+                    ref="B",
+                ),
+            ],
             12,
             y + 1,
             bars=True,
             stack=True,
             desc="Posts sent to the digest channels, by how: forward, copy (protected "
-            "source), link (fallback), failed (not delivered).",
+            "source), link (fallback), failed (not delivered); and duplicate: dropped "
+            "instead of sent, the digest already had its pictures, videos or text.",
         ),
         series(
             "Delivered and not read yet",

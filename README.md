@@ -9,6 +9,8 @@ into a private digest channel the service creates for you, best post first,
 whichever fetch it came from; the next batch arrives once you have read most
 (90%) of the previous one, or when you press **Next**. Posts wait in the
 queue up to `max_age` days (90), so time away never costs you the best ones.
+A post whose pictures, videos or text the digest already got is dropped, so
+a meme that went round ten channels reaches you once.
 Every delivered post is indexed, pictures and speech included, so `/find`
 gets it back later by a few words.
 
@@ -55,7 +57,8 @@ service resolved, `/status` the queue.
   settings. Keys: `min_age` (hours, default 24), `period` (hours, default 24),
   `batch` (posts per batch, 10), `scoring` (`per_view` | `per_subscriber` |
   `raw`), `min_denominator` (floor for views / subscribers, 200), `max_items`
-  (queue cap, 1000), `max_age` (days an undelivered post may wait, 90), `target` (use an
+  (queue cap, 1000), `max_age` (days an undelivered post may wait, 90), `dedup`
+  (`on` | `off`, drop [duplicates](#duplicates), on), `target` (use an
   existing channel id where the bot is admin), `next` (`HH:MM` in `TZ`, or
   `now`: when the next fetch runs). `/folder <name>` alone shows the settings.
 - `/folder <name> off` — remove the folder and its queue; the digest channel
@@ -74,6 +77,8 @@ service resolved, `/status` the queue.
 - `/skip [phrase]` — list the skip phrases, or add one (spaces allowed). A
   post whose text contains a skip phrase anywhere, in any case, is never
   queued; applies to fetches from then on. `/unskip <phrase>` removes one.
+- `/dups [folder]` — the latest posts dropped as [duplicates](#duplicates) (10
+  at most), each with a link to it and to the delivered post it repeats.
 - `/reset <folder>` — forget the digest channel and take it out of the folder;
   the next fetch creates a new one. The old channel itself is kept.
 - `/help [command]` — the command list, or details and examples of one
@@ -100,6 +105,32 @@ and, if the last batch is already read, the next batch right away.
 
 A scheduled fetch that fails sends you one message per distinct error;
 `/status` shows the last error until a fetch succeeds.
+
+## Duplicates
+
+Right before a batch goes out, each of its posts is compared with every post
+the folder's digest already got. A repeat is dropped and the next post in the
+queue takes its place, so a batch stays full and, of several copies, the
+best-scored one is the one you see. The footer of the batch says how many were
+dropped (`♻️ 2 duplicates dropped`) and `/dups` lists them next to the posts
+they repeat. Each folder is compared with its own digest only.
+
+- **A post with media** is a repeat when every picture or video of it was in
+  one delivered post. Two attachments are the same when Telegram's file is
+  (a forward, a re-send), or when they look the same: the picture itself, or
+  for a video its cover and length. A recompressed or resized copy matches;
+  a cropped or watermarked one usually does not, and neither does the same meme
+  template with another caption. The caption is ignored, unless both posts
+  carry a long text (15 words or more) and the texts differ: one cover picture
+  over two different stories is two posts.
+- **A post without media** is a repeat when its text is: the same words,
+  ignoring case and punctuation, or, from 10 words up, at least four fifths of
+  them, which is a copied text with another channel's signature under it.
+
+The check errs on the side of delivering: a post it cannot read or compare
+goes out. It looks at the small renditions Telegram keeps of every picture,
+nothing is sent to an outside service. Posts delivered before the check
+existed are not compared with. `/folder <name> dedup=off` turns it off.
 
 ## Search
 
@@ -135,8 +166,9 @@ collector: mount that collector's directory into the container and point
 restarts:
 
 - per folder: fetches and what they collected (`added` / `known` /
-  `skipped`), batches, delivered posts by kind, posts your read marker
-  passed, the queue by state, last and next fetch;
+  `skipped`), batches, delivered posts by kind, duplicates dropped (by
+  `media` or `text`), posts your read marker passed, the queue by state,
+  last and next fetch;
 - search index: entries by state, indexing attempts, picture and speech
   calls, rate-limit pauses.
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from datetime import datetime
 
-from telegrief.models import ChannelInfo, PostContent, RawPost
+from telegrief.models import ChannelInfo, PostContent, PostSample, RawPost
 from telegrief.tg.protocols import (
     ChannelUnavailable,
     CommandHandlerFn,
@@ -35,6 +35,8 @@ class FakeUser:
         self.contents: dict[tuple[int, int], PostContent] = {}  # post_content results
         self.content_fails: set[int] = set()  # post_content raises GatewayError with media
         self.content_calls: list[tuple[int, list[int], bool, bool]] = []
+        self.samples: dict[tuple[int, int], PostSample] = {}  # post_sample results
+        self.sample_calls: list[tuple[int, list[int]]] = []
         self.restricted: set[int] = set()  # forward_to_relay raises ForwardRestricted
         self.copy_fails: set[int] = set()  # copy_to_relay raises CopyFailed
         self.unavailable: set[int] = set()  # channel_info raises ChannelUnavailable
@@ -161,6 +163,14 @@ class FakeUser:
             images=content.images if images else (),
             speech=content.speech if speech else (),
         )
+
+    async def post_sample(self, channel_id: int, msg_ids: list[int]) -> PostSample:
+        self._check_alive()
+        self.sample_calls.append((channel_id, list(msg_ids)))
+        sample = self.samples.get((channel_id, msg_ids[0]))
+        if sample is None:
+            raise ChannelUnavailable("post not found")
+        return sample
 
     async def read_marker(self, channel_id: int) -> int:
         if channel_id in self.marker_fails:

@@ -51,9 +51,16 @@ def _placeholder(channel_id: int) -> ChannelInfo:
 
 
 def render_footer(
-    batch: list[QueueItem], channels: dict[int, ChannelInfo], cfg: FolderConfig, pending: int
+    batch: list[QueueItem],
+    channels: dict[int, ChannelInfo],
+    cfg: FolderConfig,
+    pending: int,
+    duplicates: int = 0,
 ) -> str:
-    """One line per delivered item (numbered inside the batch), then the queue counter."""
+    """One line per delivered item (numbered inside the batch), then the queue counter.
+
+    ``duplicates``: posts dropped while the batch was put together, already delivered once.
+    """
     lines: list[str] = []
     for n, item in enumerate(batch, start=1):
         channel = channels.get(item.channel_id) or _placeholder(item.channel_id)
@@ -62,6 +69,8 @@ def render_footer(
             f"{format_engagement(item.engagement, channel)} / {format_count(item.views)}👁 · "
             f"{html.escape(channel.display)}"
         )
+    if duplicates:
+        lines.append(f"♻️ {duplicates} duplicate{'s' if duplicates > 1 else ''} dropped")
     lines.append(f"queued {pending}" if pending else "✅ queue empty")
     return "\n".join(lines)
 
