@@ -497,9 +497,11 @@ class TelethonUser:
         self._tmp.mkdir(parents=True, exist_ok=True)
         path = self._tmp / f"speech_{abs(channel_id)}_{msg.id}"
         try:
-            if not await self._client.download_media(msg, file=str(path)):
+            # Telethon appends the file's extension, so the saved path is not ``path``
+            saved = await self._client.download_media(msg, file=str(path))
+            if not saved:
                 return None
-            return await speech_clip(path)
+            return await speech_clip(Path(saved))
         finally:
             for leftover in self._tmp.glob(f"{path.name}*"):
                 leftover.unlink(missing_ok=True)

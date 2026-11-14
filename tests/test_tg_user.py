@@ -222,3 +222,51 @@ def test_has_sound_skips_gifs_stickers_and_muted_videos() -> None:
     assert not has_sound(_doc("video/mp4", video, types.DocumentAttributeAnimated()))
     assert not has_sound(_doc("image/webp"))
     assert not has_sound(_doc(""))
+
+
+class FakeDownloadClient:
+    """get_messages returns the given messages; download_media saves like Telethon does."""
+
+    def __init__(self, messages: list[SimpleNamespace]) -> None:
+        self.messages = messages
+        self.saved: list[Path] = []
+
+    async def get_messages(self, channel_id: int, ids: list[int]) -> list[SimpleNamespace]:
+        return self.messages
+
+    async def download_media(self, msg: SimpleNamespace, file: str) -> str:
+        saved = Path(file + ".mp4")  # the extension is appended to the requested path
+        saved.write_bytes(b"video")
+        self.saved.append(saved)
+        return str(saved)
+
+
+async def test_post_content_cuts_speech_from_the_file_telethon_saved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = types.DocumentAttributeVideo(duration=5, w=1, h=1)
+    messages = [
+        SimpleNamespace(
+            id=7, message="Смотри", media=object(), photo=None, document=_doc("video/mp4", video)
+        ),
+        SimpleNamespace(id=8, message="", media=None, photo=None, document=None),
+    ]
+    messages[0].document.size = 1000
+    client = FakeDownloadClient(messages)
+    clipped: list[tuple[Path, bool]] = []
+
+    async def fake_clip(path: Path) -> bytes:
+        clipped.append((path, path.exists()))
+        return b"OggS"
+
+    monkeypatch.setattr("telegrief.tg.user.speech_clip", fake_clip)
+    user = TelethonUser(client, me_id=1, tmp_dir=tmp_path / "tmp")  # type: ignore[arg-type]
+
+    content = await user.post_content(-1001, [7, 8], images=False, speech=True)
+
+    assert (content.text, content.speech, content.images) == ("Смотри", (b"OggS",), ())
+    assert clipped == [(client.saved[0], True)]
+    assert list((tmp_path / "tmp").iterdir()) == []  # the download is removed afterwards
+
+    messages[0].document.size = 51 * 1024 * 1024
+    assert (await user.post_content(-1001, [7], images=False, speech=True)).speech == ()
