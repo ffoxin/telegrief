@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from loguru import logger
 
+from .admin import Admin
 from .collector import Collector
 from .commands import ABOUT, CommandHandler, menu
 from .config import Settings
@@ -221,6 +222,9 @@ async def serve(settings: Settings) -> None:
         asyncio.create_task(bot.run_until_disconnected(), name="bot"),
         asyncio.create_task(stop.wait(), name="fatal"),
     ]
+    if settings.admin_port is not None:
+        admin = Admin(storage, app.indexer, ZoneInfo(settings.tz))
+        tasks.append(asyncio.create_task(admin.run(settings.admin_port), name="admin"))
     if settings.metrics_file is not None:
         writer = MetricsWriter(storage, settings.metrics_file)
         tasks.append(asyncio.create_task(writer.run(), name="metrics"))

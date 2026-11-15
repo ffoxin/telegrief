@@ -245,4 +245,8 @@ async def test_indexing_outcomes_are_counted(storage: Storage) -> None:
         "telegrief_index_media_total['rejected', 'speech']": 2,
         "telegrief_index_pauses_total[]": 1,
     }
-    assert await storage.index_coverage() == {"text": 1, "pictures": 1, "speech": 0}
+    assert await storage.index_coverage() == {"text": 1, "pictures": 1, "speech": 0, "nothing": 0}
+    await h.add(4, "")
+    h.transcriber.error = None
+    await h.indexer.drain()
+    assert (await storage.index_coverage())["nothing"] == 1  # indexed, yet nothing to find

@@ -156,6 +156,19 @@ text is still indexed. A rate limit from Anthropic or Groq is not counted as
 a failure: indexing pauses and resumes within 10 minutes. Posts delivered before the index existed are added by
 `/reindex`.
 
+## Admin page
+
+With `ADMIN_PORT` set, the service serves a small web page on that port: the
+search index, newest first, with what was read from every post (its text,
+the picture description, the transcript), the same word search as `/find`,
+filters (with speech, with pictures, nothing found, waiting, failed), and a
+**Re-index** button on each post's page.
+
+The page has no login of its own. It answers only requests that carry a
+`Remote-User` header and trusts it, so the port must be reachable solely
+through a proxy that authenticates and sets that header (Authelia's forward
+auth behind Traefik does). Never publish the port itself.
+
 ## Metrics
 
 With `METRICS_FILE` set, the service writes its metrics every 30 seconds as
@@ -184,7 +197,7 @@ times in replies), `AUTO_NEXT_MIN_INTERVAL_S` (120), `AUTO_NEXT_READ_FRACTION`
 automatically), `MAX_COPY_MB` (200), `ANTHROPIC_API_KEY`
 (unset or empty: pictures are not indexed), `INDEX_MODEL` (`claude-haiku-5-5`),
 `GROQ_API_KEY` (unset or empty: speech is not indexed), `STT_MODEL`
-(`whisper-large-v3`), `METRICS_FILE` (unset: no metrics),
+(`whisper-large-v3`), `METRICS_FILE` (unset: no metrics), `ADMIN_PORT` (unset: no admin page),
 `DATA_DIR` (`/app/data`), `LOG_LEVEL`
 (INFO). Everything per folder is set with `/folder` and stored in the SQLite
 database under `DATA_DIR`.

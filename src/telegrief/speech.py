@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Protocol
 
 import groq
@@ -22,14 +23,66 @@ class Transcriber(Protocol):
     async def transcribe(self, clip: bytes) -> str: ...
 
 
+# What Whisper writes over music and noise: lines from the subtitle files it was
+# trained on. Compared with letters only, case folded.
+PHANTOMS = frozenset(
+    {
+        "",
+        "субтитрысделалdimatorzok",
+        "субтитрысоздавалdimatorzok",
+        "субтитрыделалdimatorzok",
+        "редакторсубтитров",
+        "продолжениеследует",
+        "спасибозапросмотр",
+        "подписывайтесьнаканал",
+        "thankyou",
+        "thankyouforwatching",
+        "thanksforwatching",
+        "pleasesubscribe",
+        "subscribe",
+        "suscríbete",
+        "suscribete",
+        "you",
+        "bye",
+        "музыка",
+        "music",
+        "applause",
+        "аплодисменты",
+    }
+)
+
+
+# The same lines glued to real speech, usually at the end: cut out wherever they are.
+PHANTOM_RE = re.compile(
+    r"""
+    (?: субтитры\s+\w+\s+[«"']?[\w.\-]+[»"']?        # Субтитры сделал DimaTorzok
+      | редактор\s+субтитров\s+(?:[А-ЯЁA-Z]\.\s*)?\S+
+      | корректор\s+(?:[А-ЯЁA-Z]\.\s*)?\S+
+      | продолжение\s+следует
+      | спасибо\s+за\s+просмотр
+      | thanks?(?:\s+you)?\s+for\s+watching
+    ) [.!…]*
+    | \[[^\]]*\]                                      # [музыка]
+    | \([^)]*(?:music|музыка|applause)[^)]*\)
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _letters(text: str) -> str:
+    return "".join(ch for ch in text.casefold() if ch.isalpha())
+
+
 def spoken_text(segments: list[Any]) -> str:
-    """Text of the segments Whisper considers speech, joined."""
+    """Text of the segments Whisper considers speech, joined; known phantom lines dropped."""
     parts = [
         str(s.get("text", "")).strip()
         for s in segments
         if float(s.get("no_speech_prob", 0.0)) <= NO_SPEECH_MAX
     ]
-    return " ".join(p for p in parts if p)
+    kept = [p for p in parts if p and _letters(p) not in PHANTOMS]
+    text = " ".join(PHANTOM_RE.sub(" ", " ".join(kept)).split())
+    return "" if _letters(text) in PHANTOMS else text  # "" too: nothing but symbols
 
 
 class GroqTranscriber:
@@ -52,4 +105,4 @@ class GroqTranscriber:
         segments = getattr(result, "segments", None)
         if isinstance(segments, list):
             return spoken_text(segments)
-        return result.text.strip()
+        return spoken_text([{"text": result.text}])

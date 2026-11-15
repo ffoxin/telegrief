@@ -171,7 +171,7 @@ async def collect(storage: Storage, now: datetime) -> list[Family]:
         Family(
             "telegrief_index_posts_with",
             "gauge",
-            "Indexed posts that have text, a picture description, a transcript.",
+            "Indexed posts with text, a picture description, a transcript, or nothing to find.",
             [({"content": k}, float(v)) for k, v in coverage.items()],
         )
     )

@@ -51,7 +51,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
+        "w": 3,
         "x": 0,
         "y": 0
       },
@@ -108,8 +108,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 4,
+        "w": 3,
+        "x": 3,
         "y": 0
       },
       "targets": [
@@ -158,15 +158,15 @@
       "type": "stat",
       "id": 3,
       "title": "Indexed",
-      "description": "Posts /find can return.",
+      "description": "Posts processed without an error. Not all of them are findable: see the next tile.",
       "datasource": {
         "type": "prometheus",
         "uid": "infra-metrics"
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 8,
+        "w": 3,
+        "x": 6,
         "y": 0
       },
       "targets": [
@@ -214,6 +214,67 @@
     {
       "type": "stat",
       "id": 4,
+      "title": "Indexed, nothing found",
+      "description": "Processed posts with no text, no picture description and no transcript: /find cannot return them. Some are expected (silent videos, music); a large share means pictures or speech are not being read.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 9,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "telegrief_index_posts_with{content=\"nothing\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "id": 5,
       "title": "Index waiting",
       "description": "Delivered posts not indexed yet (includes ones being retried).",
       "datasource": {
@@ -222,7 +283,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
+        "w": 3,
         "x": 12,
         "y": 0
       },
@@ -270,7 +331,7 @@
     },
     {
       "type": "stat",
-      "id": 5,
+      "id": 6,
       "title": "Index failed",
       "description": "Given up after 4 attempts; /reindex retries them.",
       "datasource": {
@@ -279,8 +340,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 16,
+        "w": 3,
+        "x": 15,
         "y": 0
       },
       "targets": [
@@ -331,7 +392,64 @@
     },
     {
       "type": "stat",
-      "id": 6,
+      "id": 7,
+      "title": "Transcribed, 24h",
+      "description": "Sound clips Groq transcribed in the last 24 hours. Zero while videos are being indexed means speech is not being read.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "infra-metrics"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 18,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "sum(increase(telegrief_index_media_total{kind=\"speech\",result=\"ok\"}[24h]))",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "id": 8,
       "title": "Metrics age",
       "description": "Seconds since telegrief last wrote its metrics; large means it is down.",
       "datasource": {
@@ -340,8 +458,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 20,
+        "w": 3,
+        "x": 21,
         "y": 0
       },
       "targets": [
@@ -396,7 +514,7 @@
     },
     {
       "type": "table",
-      "id": 7,
+      "id": 9,
       "title": "Folders",
       "description": "",
       "datasource": {
@@ -560,7 +678,7 @@
     },
     {
       "type": "row",
-      "id": 8,
+      "id": 10,
       "title": "Pool: what each fetch brings",
       "collapsed": false,
       "gridPos": {
@@ -572,7 +690,7 @@
     },
     {
       "type": "timeseries",
-      "id": 9,
+      "id": 11,
       "title": "Posts added to the pool per fetch",
       "description": "New posts each fetch put into the queue. One bar is one hour, so a bar is one fetch unless two folders fetch in the same hour (they stack).",
       "datasource": {
@@ -630,7 +748,7 @@
     },
     {
       "type": "timeseries",
-      "id": 10,
+      "id": 12,
       "title": "What fetches collected",
       "description": "added: new in the queue. known: already queued or delivered. skipped: dropped by a skip phrase.",
       "datasource": {
@@ -688,7 +806,7 @@
     },
     {
       "type": "timeseries",
-      "id": 11,
+      "id": 13,
       "title": "Pool size",
       "description": "Posts waiting for delivery. Drops are batches going out and posts ageing past max_age.",
       "datasource": {
@@ -746,7 +864,7 @@
     },
     {
       "type": "timeseries",
-      "id": 12,
+      "id": 14,
       "title": "Fetches",
       "description": "Fetch runs, successful and failed.",
       "datasource": {
@@ -804,7 +922,7 @@
     },
     {
       "type": "row",
-      "id": 13,
+      "id": 15,
       "title": "Reading: what was delivered and read, and when",
       "collapsed": false,
       "gridPos": {
@@ -816,7 +934,7 @@
     },
     {
       "type": "timeseries",
-      "id": 14,
+      "id": 16,
       "title": "Posts read",
       "description": "Delivered posts your read marker passed, per hour.",
       "datasource": {
@@ -874,7 +992,7 @@
     },
     {
       "type": "timeseries",
-      "id": 15,
+      "id": 17,
       "title": "Posts delivered",
       "description": "Posts sent to the digest channels, by how: forward, copy (protected source), link (fallback), failed (not delivered); and duplicate: dropped instead of sent, the digest already had its pictures, videos or text.",
       "datasource": {
@@ -941,7 +1059,7 @@
     },
     {
       "type": "timeseries",
-      "id": 16,
+      "id": 18,
       "title": "Delivered and not read yet",
       "description": "The backlog in the digest channels.",
       "datasource": {
@@ -999,7 +1117,7 @@
     },
     {
       "type": "timeseries",
-      "id": 17,
+      "id": 19,
       "title": "Batches",
       "description": "auto: sent because the previous batch was read. manual: the Next button.",
       "datasource": {
@@ -1057,7 +1175,7 @@
     },
     {
       "type": "row",
-      "id": 18,
+      "id": 20,
       "title": "Search index: how indexing is going",
       "collapsed": false,
       "gridPos": {
@@ -1069,7 +1187,7 @@
     },
     {
       "type": "timeseries",
-      "id": 19,
+      "id": 21,
       "title": "Index entries by state",
       "description": "done: searchable. pending: waiting or being retried. failed: given up.",
       "datasource": {
@@ -1127,7 +1245,7 @@
     },
     {
       "type": "timeseries",
-      "id": 20,
+      "id": 22,
       "title": "Indexing attempts",
       "description": "done: indexed. retry: failed, will be tried again in 10 min. failed: 4th failure, given up.",
       "datasource": {
@@ -1185,7 +1303,7 @@
     },
     {
       "type": "timeseries",
-      "id": 21,
+      "id": 23,
       "title": "Pictures and speech",
       "description": "Claude calls for pictures (one per post) and Groq calls for sound clips. rejected: the service refused that input; the post is indexed without it.",
       "datasource": {
@@ -1243,7 +1361,7 @@
     },
     {
       "type": "timeseries",
-      "id": 22,
+      "id": 24,
       "title": "Rate-limit pauses",
       "description": "Indexing passes stopped by an Anthropic or Groq rate limit. Indexing resumes by itself within 10 minutes.",
       "datasource": {
@@ -1301,7 +1419,7 @@
     },
     {
       "type": "timeseries",
-      "id": 23,
+      "id": 25,
       "title": "What indexed posts contain",
       "description": "Indexed posts with their own text, with a picture description, with a transcript.",
       "datasource": {
