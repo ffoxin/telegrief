@@ -73,6 +73,7 @@ class ItemState(StrEnum):
     PENDING = "pending"
     SENT = "sent"
     FAILED = "failed"
+    DUPLICATE = "duplicate"  # dropped: the same content was already delivered
 
 
 class Delivery(StrEnum):
@@ -105,6 +106,23 @@ class PostContent:
     speech: tuple[bytes, ...] = ()
 
 
+@dataclass(frozen=True)
+class MediaSample:
+    """One attachment as duplicate detection sees it."""
+
+    id: str  # Telegram's file id: the same for a forward or a re-send without upload
+    picture: bytes | None = None  # a small rendition: the photo, or the cover of a video
+    duration: int | None = None  # whole seconds, for video and audio
+
+
+@dataclass(frozen=True)
+class PostSample:
+    """What duplicate detection reads from a post: its text and a sample of each attachment."""
+
+    text: str
+    media: tuple[MediaSample, ...] = ()
+
+
 class FolderConfig(BaseModel):
     """Per-folder tuning, editable through /folder."""
 
@@ -117,6 +135,7 @@ class FolderConfig(BaseModel):
     min_denominator: int = Field(default=200, ge=1)
     max_items: int = Field(default=1000, ge=1)
     max_age_d: int = Field(default=90, ge=1)
+    dedup: bool = True
 
     @model_validator(mode="after")
     def _max_age_covers_window(self) -> FolderConfig:
@@ -170,6 +189,19 @@ class QueueItem:
     @property
     def msg_id(self) -> int:
         return self.msg_ids[0]
+
+
+@dataclass(frozen=True)
+class DroppedDuplicate:
+    """A queued post dropped because ``of_*`` (delivered earlier) has the same content."""
+
+    folder: str
+    channel_id: int
+    msg_id: int
+    preview: str
+    of_channel_id: int
+    of_msg_id: int
+    at: datetime
 
 
 @dataclass

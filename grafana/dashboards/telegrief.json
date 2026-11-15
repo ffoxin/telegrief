@@ -994,7 +994,7 @@
       "type": "timeseries",
       "id": 17,
       "title": "Posts delivered",
-      "description": "Posts sent to the digest channels, by how: forward, copy (protected source), link (fallback), failed (not delivered).",
+      "description": "Posts sent to the digest channels, by how: forward, copy (protected source), link (fallback), failed (not delivered); and duplicate: dropped instead of sent, the digest already had its pictures, videos or text.",
       "datasource": {
         "type": "prometheus",
         "uid": "infra-metrics"
@@ -1014,6 +1014,15 @@
           "expr": "sum by (delivery) (increase(telegrief_delivered_posts_total{folder=~\"$folder\"}[$__interval]))",
           "legendFormat": "{{delivery}}",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "infra-metrics"
+          },
+          "expr": "sum(increase(telegrief_duplicate_posts_total{folder=~\"$folder\"}[$__interval]))",
+          "legendFormat": "duplicate",
+          "refId": "B"
         }
       ],
       "fieldConfig": {

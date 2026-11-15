@@ -25,7 +25,15 @@ from telethon.tl import functions, types
 
 from ..config import normalize_title
 from ..media import speech_clip
-from ..models import ChannelInfo, Image, ImageType, PostContent, RawPost
+from ..models import (
+    ChannelInfo,
+    Image,
+    ImageType,
+    MediaSample,
+    PostContent,
+    PostSample,
+    RawPost,
+)
 from .protocols import (
     PING_TEXT,
     ChannelUnavailable,
@@ -46,6 +54,8 @@ FLOOD_SLEEP_THRESHOLD = 120
 PHOTO_MIN_SIDE = 1200
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 MAX_SPEECH_BYTES = 50 * 1024 * 1024
+# Duplicate detection compares small pictures: Telegram's 320 px rendition is plenty.
+SAMPLE_MIN_SIDE = 320
 IMAGE_MIMES: dict[str, ImageType] = {
     "image/jpeg": "image/jpeg",
     "image/png": "image/png",
@@ -192,15 +202,15 @@ def raw_post_from_message(msg: Any, channel_id: int) -> RawPost | None:
     )
 
 
-def pick_photo_size(sizes: Iterable[Any]) -> Any:
-    """Smallest size with a side of PHOTO_MIN_SIDE or more, else the largest; None if none."""
+def pick_photo_size(sizes: Iterable[Any], min_side: int = PHOTO_MIN_SIDE) -> Any:
+    """Smallest size with a side of ``min_side`` or more, else the largest; None if none."""
     sized = sorted(
         (s for s in sizes if isinstance(s, types.PhotoSize | types.PhotoSizeProgressive)),
         key=lambda s: max(s.w, s.h),
     )
     if not sized:
         return None
-    return next((s for s in sized if max(s.w, s.h) >= PHOTO_MIN_SIDE), sized[-1])
+    return next((s for s in sized if max(s.w, s.h) >= min_side), sized[-1])
 
 
 def has_sound(document: Any) -> bool:
@@ -214,6 +224,14 @@ def has_sound(document: Any) -> bool:
         if isinstance(attr, types.DocumentAttributeVideo) and attr.nosound:
             return False
     return True
+
+
+def media_seconds(document: Any) -> int | None:
+    """Length of a video or audio file in whole seconds; None for anything else."""
+    for attr in document.attributes:
+        if isinstance(attr, types.DocumentAttributeVideo | types.DocumentAttributeAudio):
+            return round(attr.duration)
+    return None
 
 
 def _ids(messages: Any) -> list[int]:
@@ -505,6 +523,47 @@ class TelethonUser:
         finally:
             for leftover in self._tmp.glob(f"{path.name}*"):
                 leftover.unlink(missing_ok=True)
+
+    # ---- duplicate detection -------------------------------------------------
+
+    @_translate_fatal
+    async def post_sample(self, channel_id: int, msg_ids: list[int]) -> PostSample:
+        try:
+            messages = await self._client.get_messages(channel_id, ids=msg_ids)
+            messages = [m for m in messages if m is not None]
+            if not messages:
+                raise ChannelUnavailable("post not found")
+            media = [
+                sample
+                for m in messages
+                if (sample := await self._media_sample(m, channel_id)) is not None
+            ]
+        except FATAL_ERRORS:
+            raise
+        except (RPCError, ValueError, OSError) as exc:
+            raise ChannelUnavailable(str(exc)) from exc
+        text = " ".join(" ".join(m.message.split()) for m in messages if m.message)
+        return PostSample(text=text, media=tuple(media))
+
+    async def _media_sample(self, msg: Any, channel_id: int) -> MediaSample | None:
+        """The attachment's file id and a small picture of it; None when there is none."""
+        if msg.media is None or isinstance(msg.media, types.MessageMediaWebPage):
+            return None
+        if msg.photo is not None:
+            size = pick_photo_size(msg.photo.sizes, SAMPLE_MIN_SIDE)
+            data = await self._client.download_media(msg, bytes, thumb=size)
+            return MediaSample(f"photo:{msg.photo.id}", data or None)
+        document = msg.document
+        if document is None:
+            # a poll, a location, ...: nothing to compare, so the id is the post's own
+            return MediaSample(f"other:{channel_id}:{msg.id}")
+        data = None
+        size = pick_photo_size(document.thumbs or (), SAMPLE_MIN_SIDE)
+        if size is not None:
+            data = await self._client.download_media(msg, bytes, thumb=size)
+        elif document.mime_type in IMAGE_MIMES and int(document.size or 0) <= MAX_IMAGE_BYTES:
+            data = await self._client.download_media(msg, bytes)
+        return MediaSample(f"document:{document.id}", data or None, media_seconds(document))
 
     # ---- read tracking -------------------------------------------------------
 

@@ -50,6 +50,8 @@ async def test_counters_exist_at_zero_before_the_first_event(storage: Storage) -
     assert seen['telegrief_indexed_posts_total{result="done"}'] == 0
     assert seen["telegrief_index_pauses_total"] == 0
     assert seen['telegrief_queue_posts{folder="😊mEm",state="pending"}'] == 0
+    assert seen['telegrief_queue_posts{folder="😊mEm",state="duplicate"}'] == 0
+    assert seen['telegrief_duplicate_posts_total{folder="😊mEm",match="media"}'] == 0
     assert seen['telegrief_index_posts{state="failed"}'] == 0
     assert seen["telegrief_metrics_timestamp_seconds"] == NOW.timestamp()
 

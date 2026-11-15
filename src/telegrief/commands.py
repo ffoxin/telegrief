@@ -14,7 +14,7 @@ from .collector import Collector, digest_targets
 from .delivery import bare_id, post_link
 from .digest import DigestService
 from .indexer import Indexer, fold
-from .models import ChannelInfo, Folder, FolderConfig, IndexEntry, IndexState
+from .models import ChannelInfo, DroppedDuplicate, Folder, FolderConfig, IndexEntry, IndexState
 from .scoring import format_count
 from .targets import TargetResolver
 from .tg.protocols import FolderNotFound, UserGateway
@@ -48,6 +48,8 @@ COMMANDS: tuple[Command, ...] = (
         "min_denominator — floor for views / subscribers when scoring [200]\n"
         "max_items — queue cap, lowest scores dropped first [1000]\n"
         "max_age — days an undelivered post may wait in the queue [90]\n"
+        "dedup — on | off: drop posts whose text, pictures or videos were already "
+        "delivered [on]\n"
         "target — id of an existing channel to post digests to (bot must be admin)\n"
         "next — HH:MM (in TZ) or now: when the next fetch runs\n"
         "\n"
@@ -94,6 +96,17 @@ COMMANDS: tuple[Command, ...] = (
     ),
     Command("unskip", "/unskip <phrase>", "stop skipping a phrase"),
     Command(
+        "dups",
+        "/dups [folder]",
+        "the latest posts dropped as duplicates",
+        "Before a batch goes out, every post is compared with the ones the folder's digest "
+        "already got; a post with the same pictures or videos, or (without media) the same "
+        "text, is dropped. Of several copies the best-scored one is delivered.\n"
+        "Lists the latest dropped posts, each with a link to it and to the delivered post "
+        "it repeats, so a wrong match is easy to spot. /folder <name> dedup=off turns the "
+        "check off for a folder.",
+    ),
+    Command(
         "reset",
         "/reset <folder>",
         "forget the digest channel",
@@ -137,6 +150,7 @@ NO_SKIPS = "no skip phrases; /skip <phrase> adds one"
 NO_FOLDERS = "no folders configured; /folder <name> adds one"
 
 FIND_LIMIT = 10
+DUPS_LIMIT = 10
 SNIPPET_CHARS = 160
 SNIPPET_LEAD = 50
 
@@ -149,6 +163,7 @@ CONFIG_KEYS = {
     "min_denominator": "min_denominator",
     "max_items": "max_items",
     "max_age": "max_age_d",
+    "dedup": "dedup",
 }
 ACTION_KEYS = frozenset({"target", "next"})
 UNITS = {"min_age": "h", "period": "h", "max_age": "d"}
@@ -243,6 +258,7 @@ def describe(folder: Folder, pending: int, tz: ZoneInfo) -> str:
     return (
         f"{folder.name} · {cfg.min_age_h}/{cfg.period_h}h · batch {cfg.batch_size} · "
         f"{cfg.scoring}/{cfg.min_denominator} · max {cfg.max_items} · {cfg.max_age_d}d · "
+        f"{'' if cfg.dedup else 'dedup off · '}"
         f"queued {pending} · next {fmt(folder.next_run_at, tz)}"
     )
 
@@ -276,6 +292,17 @@ def render_hit(entry: IndexEntry, channel: ChannelInfo, needles: list[str], tz: 
     lines.append(post_link(channel, entry.msg_id))
     if entry.sent_msg_id is not None:
         lines.append(f"digest: https://t.me/c/{bare_id(entry.target)}/{entry.sent_msg_id}")
+    return "\n".join(lines)
+
+
+def render_dropped(
+    dropped: DroppedDuplicate, channel: ChannelInfo, original: ChannelInfo, tz: ZoneInfo
+) -> str:
+    lines = [f"♻️ {fmt(dropped.at, tz)} · {dropped.folder} · {channel.display}"]
+    if dropped.preview:
+        lines.append(dropped.preview)
+    lines.append(post_link(channel, dropped.msg_id))
+    lines.append(f"same as {post_link(original, dropped.of_msg_id)}")
     return "\n".join(lines)
 
 
@@ -315,6 +342,8 @@ class CommandHandler:
             return await self._find(args)
         if command == "reindex":
             return await self._reindex()
+        if command == "dups":
+            return await self._dups(args)
         if command == "skip":
             return await self._skip(args)
         if command == "unskip":
@@ -493,21 +522,25 @@ class CommandHandler:
             return f"nothing found for: {' '.join(args)}"
         hits: list[str] = []
         for entry in entries:
-            cached = await self._storage.get_channel(entry.channel_id)
-            channel = cached[0] if cached is not None else None
-            if channel is None:
-                channel = ChannelInfo(
-                    id=entry.channel_id,
-                    username=None,
-                    title=str(entry.channel_id),
-                    subscribers=0,
-                    reactions_enabled=True,
-                    noforwards=False,
-                )
+            channel = await self._cached_channel(entry.channel_id)
             hits.append(render_hit(entry, channel, needles, self._tz))
         if total > len(entries):
             hits.append(f"newest {len(entries)} of {total}; add a word to narrow it down")
         return "\n\n".join(hits)
+
+    async def _cached_channel(self, channel_id: int) -> ChannelInfo:
+        """The channel as last seen by a fetch; a bare id when it never was."""
+        cached = await self._storage.get_channel(channel_id)
+        if cached is not None:
+            return cached[0]
+        return ChannelInfo(
+            id=channel_id,
+            username=None,
+            title=str(channel_id),
+            subscribers=0,
+            reactions_enabled=True,
+            noforwards=False,
+        )
 
     async def _reindex(self) -> str:
         now = self._clock()
@@ -525,6 +558,31 @@ class CommandHandler:
         if retried:
             reply += f", {retried} failed ones retried"
         return reply
+
+    # ---- /dups ---------------------------------------------------------------
+
+    async def _dups(self, args: list[str]) -> str:
+        name = " ".join(args)
+        folder = await self._storage.find_folder(name) if name else None
+        if name and folder is None:
+            return f"unknown folder: {name}"
+        dropped, total = await self._storage.recent_duplicates(
+            DUPS_LIMIT, folder.id if folder is not None else None
+        )
+        if not dropped:
+            return "no duplicates dropped yet"
+        blocks = [
+            render_dropped(
+                d,
+                await self._cached_channel(d.channel_id),
+                await self._cached_channel(d.of_channel_id),
+                self._tz,
+            )
+            for d in dropped
+        ]
+        if total > len(dropped):
+            blocks.append(f"latest {len(dropped)} of {total}")
+        return "\n\n".join(blocks)
 
     # ---- /skip, /unskip ------------------------------------------------------
 

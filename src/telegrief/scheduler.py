@@ -16,6 +16,7 @@ from .admin import Admin
 from .collector import Collector
 from .commands import ABOUT, CommandHandler, menu
 from .config import Settings
+from .dedup import Deduper
 from .delivery import Deliverer
 from .digest import DigestService
 from .indexer import Indexer
@@ -148,6 +149,7 @@ def build_app(
         clock=_utcnow,
         on_fatal=on_fatal,
         indexer=indexer,
+        deduper=Deduper(user, storage),
     )
     commands = CommandHandler(
         service, user, storage, collector, targets, ZoneInfo(settings.tz), _utcnow, indexer

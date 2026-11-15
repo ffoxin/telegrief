@@ -11,9 +11,11 @@ from typing import Any
 import aiosqlite
 
 from .config import normalize_title
+from .dedup import MediaPrint, Signature
 from .models import (
     ChannelInfo,
     Delivery,
+    DroppedDuplicate,
     Folder,
     FolderConfig,
     IndexEntry,
@@ -72,6 +74,7 @@ def _folder_from_row(row: aiosqlite.Row) -> Folder:
             min_denominator=row["min_denominator"],
             max_items=row["max_items"],
             max_age_d=row["max_age_d"],
+            dedup=bool(row["dedup"]),
         ),
         next_run_at=_req_dt(row["next_run_at"]),
         created_at=_req_dt(row["created_at"]),
@@ -301,8 +304,8 @@ class Storage:
             """
             INSERT INTO folders
                 (name, min_age_h, period_h, batch_size, scoring, min_denominator, max_items,
-                 max_age_d, next_run_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 max_age_d, dedup, next_run_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 name,
@@ -313,6 +316,7 @@ class Storage:
                 cfg.min_denominator,
                 cfg.max_items,
                 cfg.max_age_d,
+                int(cfg.dedup),
                 now.isoformat(),
                 now.isoformat(),
             ),
@@ -326,7 +330,7 @@ class Storage:
         await self._conn.execute(
             """
             UPDATE folders SET min_age_h = ?, period_h = ?, batch_size = ?, scoring = ?,
-                min_denominator = ?, max_items = ?, max_age_d = ?
+                min_denominator = ?, max_items = ?, max_age_d = ?, dedup = ?
             WHERE id = ?
             """,
             (
@@ -337,6 +341,7 @@ class Storage:
                 cfg.min_denominator,
                 cfg.max_items,
                 cfg.max_age_d,
+                int(cfg.dedup),
                 folder_id,
             ),
         )
@@ -543,6 +548,140 @@ class Storage:
             (folder_id,),
         )
         return [_queue_item_from_row(r) for r in rows]
+
+    # ---- duplicates ----------------------------------------------------------
+
+    async def save_signature(self, folder_id: int, signature: Signature, now: datetime) -> None:
+        key = (folder_id, signature.channel_id, signature.msg_id)
+        sketch = b"".join(h.to_bytes(4, "big") for h in sorted(signature.sketch))
+        await self._conn.execute(
+            """
+            INSERT OR REPLACE INTO signatures
+                (folder_id, channel_id, msg_id, words, sketch, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (*key, signature.words, sketch, now.isoformat()),
+        )
+        await self._conn.execute(
+            "DELETE FROM signature_media WHERE folder_id = ? AND channel_id = ? AND msg_id = ?",
+            key,
+        )
+        await self._conn.executemany(
+            """
+            INSERT INTO signature_media
+                (folder_id, channel_id, msg_id, position, media_id, duration, coarse, fine)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    *key,
+                    position,
+                    m.id,
+                    m.duration,
+                    f"{m.coarse:016x}" if m.coarse is not None else None,
+                    m.fine,
+                )
+                for position, m in enumerate(signature.media)
+            ],
+        )
+        await self._conn.commit()
+
+    async def signatures(self, folder_id: int) -> list[Signature]:
+        """Signatures of the folder's delivered posts, oldest first, without the fine grids."""
+        media: dict[tuple[int, int], list[MediaPrint]] = {}
+        for row in await self._fetchall(
+            """
+            SELECT channel_id, msg_id, media_id, duration, coarse FROM signature_media
+            WHERE folder_id = ? ORDER BY channel_id, msg_id, position
+            """,
+            (folder_id,),
+        ):
+            media.setdefault((row["channel_id"], row["msg_id"]), []).append(
+                MediaPrint(
+                    row["media_id"],
+                    row["duration"],
+                    int(row["coarse"], 16) if row["coarse"] is not None else None,
+                )
+            )
+        rows = await self._fetchall(
+            "SELECT channel_id, msg_id, words, sketch FROM signatures "
+            "WHERE folder_id = ? ORDER BY rowid",
+            (folder_id,),
+        )
+        return [
+            Signature(
+                channel_id=row["channel_id"],
+                msg_id=row["msg_id"],
+                words=row["words"],
+                sketch=frozenset(
+                    int.from_bytes(row["sketch"][i : i + 4], "big")
+                    for i in range(0, len(row["sketch"]), 4)
+                ),
+                media=tuple(media.get((row["channel_id"], row["msg_id"]), ())),
+            )
+            for row in rows
+        ]
+
+    async def fine_prints(self, folder_id: int, channel_id: int, msg_id: int) -> dict[int, bytes]:
+        """Fine grids of one post's attachments, by position."""
+        rows = await self._fetchall(
+            """
+            SELECT position, fine FROM signature_media
+            WHERE folder_id = ? AND channel_id = ? AND msg_id = ? AND fine IS NOT NULL
+            """,
+            (folder_id, channel_id, msg_id),
+        )
+        return {int(row["position"]): bytes(row["fine"]) for row in rows}
+
+    async def mark_duplicate(self, item: QueueItem, of: Signature, now: datetime) -> None:
+        """Take a pending post out of the queue as a repeat of the delivered ``of``."""
+        await self._conn.execute(
+            """
+            UPDATE queue SET state = 'duplicate', dup_channel_id = ?, dup_msg_id = ?, dup_at = ?
+            WHERE folder_id = ? AND channel_id = ? AND msg_id = ?
+            """,
+            (
+                of.channel_id,
+                of.msg_id,
+                now.isoformat(),
+                item.folder_id,
+                item.channel_id,
+                item.msg_id,
+            ),
+        )
+        await self._conn.commit()
+
+    async def recent_duplicates(
+        self, limit: int, folder_id: int | None = None
+    ) -> tuple[list[DroppedDuplicate], int]:
+        """The latest dropped duplicates, newest first, and how many there are in all."""
+        where = "q.state = 'duplicate' AND q.dup_channel_id IS NOT NULL"
+        params: tuple[Any, ...] = ()
+        if folder_id is not None:
+            where += " AND q.folder_id = ?"
+            params = (folder_id,)
+        total = await self._fetchone(f"SELECT COUNT(*) AS n FROM queue q WHERE {where}", params)
+        rows = await self._fetchall(
+            f"""
+            SELECT f.name AS folder, q.channel_id, q.msg_id, q.preview, q.dup_channel_id,
+                   q.dup_msg_id, q.dup_at
+            FROM queue q JOIN folders f ON f.id = q.folder_id
+            WHERE {where} ORDER BY q.dup_at DESC, q.rowid DESC LIMIT ?
+            """,
+            (*params, limit),
+        )
+        return [
+            DroppedDuplicate(
+                folder=row["folder"],
+                channel_id=row["channel_id"],
+                msg_id=row["msg_id"],
+                preview=row["preview"],
+                of_channel_id=row["dup_channel_id"],
+                of_msg_id=row["dup_msg_id"],
+                at=_req_dt(row["dup_at"]),
+            )
+            for row in rows
+        ], int(total["n"]) if total is not None else 0
 
     # ---- search index --------------------------------------------------------
 

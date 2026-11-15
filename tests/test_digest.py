@@ -8,6 +8,7 @@ import pytest
 
 from telegrief.collector import Collector
 from telegrief.config import Settings
+from telegrief.dedup import Deduper
 from telegrief.delivery import Deliverer
 from telegrief.digest import DigestService
 from telegrief.indexer import Indexer
@@ -16,7 +17,9 @@ from telegrief.models import (
     Folder,
     FolderConfig,
     ItemState,
+    MediaSample,
     Post,
+    PostSample,
     RawPost,
     ScoredPost,
 )
@@ -93,6 +96,7 @@ class Harness:
             defer=self.defer,
             on_fatal=self.fatal.append,
             indexer=Indexer(self.user, storage, None, clock=self.clock),
+            deduper=Deduper(self.user, storage, self.clock),
         )
         self.service.bind()
         self.user.folders["Memes"] = [CH_ID]
@@ -116,6 +120,12 @@ class Harness:
             )
             for i in range(start, start + n)
         ]
+
+    def sample(self, msg_id: int, text: str = "", *media_ids: str) -> None:
+        """What duplicate detection reads from post ``msg_id``; posts without one are unreadable."""
+        self.user.samples[(CH_ID, msg_id)] = PostSample(
+            text, tuple(MediaSample(media_id) for media_id in media_ids)
+        )
 
     async def fetch(self, **kwargs: object) -> str:
         return await self.service.fetch(self.folder.id, **kwargs)  # type: ignore[arg-type]
@@ -569,3 +579,85 @@ async def test_failed_fetch_is_counted(h: Harness) -> None:
     del h.user.folders["Memes"]
     await h.fetch()
     assert await counters(h) == {"fetches_total['error']": 1}
+
+
+# ---- duplicates ------------------------------------------------------------------
+
+
+async def test_duplicate_is_dropped_and_the_batch_is_filled_from_the_queue(h: Harness) -> None:
+    h.add_posts(5)
+    h.sample(1, "", "photo:1")
+    h.sample(2, "another caption", "photo:1")  # the picture of post 1 again
+    h.sample(3, "", "photo:3")
+    await h.fetch()
+    assert h.user.forwarded == [(CH_ID, [1]), (CH_ID, [3])]
+    footer = h.bot.last(h.target)[1].splitlines()
+    assert footer[-2:] == ["♻️ 1 duplicate dropped", "queued 2"]
+    assert len(footer) == 4  # two delivered posts
+    assert {i.msg_id for i in await h.storage.pending_items(h.fid)} == {4, 5}
+    assert await h.storage.count_items(h.fid, ItemState.DUPLICATE) == 1
+    (dropped,), total = await h.storage.recent_duplicates(10, h.fid)
+    assert (dropped.msg_id, dropped.of_channel_id, dropped.of_msg_id, total) == (2, CH_ID, 1, 1)
+    assert [s.msg_id for s in await h.storage.signatures(h.fid)] == [1, 3]
+    counters = {(n, tuple(sorted(ls.items()))): v for n, ls, v in await h.storage.counters()}
+    assert (
+        counters[("telegrief_duplicate_posts_total", (("folder", "Memes"), ("match", "media")))]
+        == 1
+    )
+    # the batch of two is the two delivered posts: reading them brings the next one
+    assert [i.msg_id for i in await h.storage.batch_items(h.fid, NOW)] == [1, 3]
+
+
+async def test_duplicate_of_a_post_from_an_earlier_batch(h: Harness) -> None:
+    h.add_posts(3)
+    text = "Сегодня в городе открылся новый мост через реку"
+    h.sample(1, text)
+    h.sample(2, "совсем другой пост")
+    h.sample(3, text.upper())
+    await h.fetch()
+    h.clock.advance(120)
+    await h.user.emit_read(h.target, 3)
+    assert h.user.forwarded == [(CH_ID, [1]), (CH_ID, [2])]  # post 3 never went out
+    assert h.bot.last(h.target)[1] == "♻️ 1 duplicate dropped\n✅ queue empty"
+    assert h.bot.last(h.target)[2] is None  # no Next button: nothing is left
+    folder = await h.reload()
+    assert folder.last_batch_at == NOW  # still the batch that delivered something
+
+
+async def test_refetched_duplicate_stays_dropped(h: Harness) -> None:
+    h.add_posts(2)
+    h.sample(1, "", "photo:1")
+    h.sample(2, "", "photo:1")
+    await h.fetch()
+    assert await h.fetch() == "✅ Memes: +0 · 0 queued"
+    assert h.user.forwarded == [(CH_ID, [1])]
+
+
+async def test_dedup_off_delivers_everything_unchecked(storage: Storage, tmp_path: Path) -> None:
+    h = await make(storage, tmp_path, dedup=False)
+    h.add_posts(2)
+    h.sample(1, "", "photo:1")
+    h.sample(2, "", "photo:1")
+    await h.fetch()
+    assert h.user.forwarded == [(CH_ID, [1]), (CH_ID, [2])]
+    assert h.user.sample_calls == []
+    assert await h.storage.signatures(h.fid) == []
+
+
+async def test_failed_delivery_is_not_remembered(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h.add_posts(2)
+    h.sample(1, "", "photo:1")
+    h.sample(2, "", "photo:1")
+    original = h.deliverer.deliver
+
+    async def flaky(target: int, item: object, channel: ChannelInfo) -> object:
+        if item.msg_id == 1:  # type: ignore[attr-defined]
+            raise RuntimeError("boom")
+        return await original(target, item, channel)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(h.deliverer, "deliver", flaky)
+    await h.fetch()
+    assert h.user.forwarded == [(CH_ID, [2])]  # the copy goes out: the first never arrived
+    assert [s.msg_id for s in await h.storage.signatures(h.fid)] == [2]

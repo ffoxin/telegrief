@@ -18,6 +18,7 @@ from telegrief.commands import (
     parse_run_args,
 )
 from telegrief.config import Settings
+from telegrief.dedup import Signature
 from telegrief.delivery import Deliverer
 from telegrief.digest import DigestService
 from telegrief.indexer import fold
@@ -381,6 +382,7 @@ def test_help_overview_covers_every_command() -> None:
         "reindex",
         "skip",
         "unskip",
+        "dups",
         "reset",
         "help",
     ]
@@ -513,3 +515,31 @@ async def test_reindex_queues_delivered_posts_once(h: Harness) -> None:
         "✅ 0 posts queued for indexing, 1 failed ones retried"
     )
     assert len(await h.storage.index_pending()) == 2
+
+
+# ---- duplicates ------------------------------------------------------------------
+
+
+async def test_folder_dedup_can_be_turned_off(h: Harness) -> None:
+    assert await h.bot.command("folder", ["Memes", "dedup=off"]) == "✅ Memes: dedup off"
+    folder = await h.storage.find_folder("Memes")
+    assert folder is not None and folder.config.dedup is False
+    assert "· dedup off · queued 0" in await h.bot.command("folder", ["Memes"])
+    assert await h.bot.command("folder", ["Memes", "dedup=on"]) == "✅ Memes: dedup on"
+    assert "dedup" not in await h.bot.command("folder", ["Memes"])
+    assert (await h.bot.command("folder", ["Memes", "dedup=maybe"])).startswith("❌ dedup:")
+
+
+async def test_dups_lists_dropped_posts_with_both_links(h: Harness) -> None:
+    assert await h.bot.command("dups", []) == "no duplicates dropped yet"
+    assert await h.bot.command("dups", ["Nope"]) == "unknown folder: Nope"
+    await h.bot.command("run", ["Memes"])  # posts 1 and 2 delivered, 3 pending
+    folder = await h.storage.find_folder("Memes")
+    assert folder is not None
+    (pending,) = await h.storage.pending_items(folder.id)
+    await h.storage.mark_duplicate(pending, Signature(-1002, 77), NOW)
+    assert await h.storage.pending_items(folder.id) == []
+    assert await h.bot.command("dups", ["memes"]) == (
+        "♻️ 2026-10-15 02:00 · Memes · @a\nhttps://t.me/a/3\nsame as https://t.me/c/2/77"
+    )
+    assert await h.bot.command("dups", ["My", "News"]) == "no duplicates dropped yet"

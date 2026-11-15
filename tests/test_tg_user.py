@@ -6,6 +6,7 @@ import pytest
 from telethon.tl import types
 
 from telegrief.config import normalize_title
+from telegrief.models import MediaSample
 from telegrief.tg.protocols import PING_TEXT, FolderNotFound
 from telegrief.tg.user import (
     TelethonUser,
@@ -270,3 +271,53 @@ async def test_post_content_cuts_speech_from_the_file_telethon_saved(
 
     messages[0].document.size = 51 * 1024 * 1024
     assert (await user.post_content(-1001, [7], images=False, speech=True)).speech == ()
+
+
+class FakeThumbClient:
+    """download_media returns bytes naming the message and the requested rendition."""
+
+    def __init__(self, messages: list[SimpleNamespace]) -> None:
+        self.messages = messages
+
+    async def get_messages(self, channel_id: int, ids: list[int]) -> list[SimpleNamespace | None]:
+        return [*self.messages, None]
+
+    async def download_media(
+        self, msg: SimpleNamespace, file: object, thumb: object = None
+    ) -> bytes:
+        assert file is bytes
+        return f"{msg.id}:{getattr(thumb, 'type', 'full')}".encode()
+
+
+def _size(kind: str, side: int) -> types.PhotoSize:
+    return types.PhotoSize(type=kind, w=side, h=side // 2, size=side * 10)
+
+
+async def test_post_sample_takes_a_small_picture_of_every_attachment(tmp_path: Path) -> None:
+    video = _doc("video/mp4", types.DocumentAttributeVideo(duration=14.6, w=1, h=1))
+    video.id, video.size, video.thumbs = 20, 5_000_000, [_size("m", 320)]
+    image_file = _doc("image/png")
+    image_file.id, image_file.size, image_file.thumbs = 30, 1000, None
+    archive = _doc("application/zip")
+    archive.id, archive.size, archive.thumbs = 40, 1000, None
+    photo = SimpleNamespace(id=10, sizes=[_size("s", 90), _size("m", 320), _size("x", 800)])
+    messages = [
+        SimpleNamespace(id=1, message="Смотри  сюда", media=object(), photo=photo, document=None),
+        SimpleNamespace(id=2, message="", media=object(), photo=None, document=video),
+        SimpleNamespace(id=3, message="", media=object(), photo=None, document=image_file),
+        SimpleNamespace(id=4, message="", media=object(), photo=None, document=archive),
+        SimpleNamespace(id=5, message="", media=object(), photo=None, document=None),  # a poll
+        SimpleNamespace(id=6, message="и сюда", media=None, photo=None, document=None),
+    ]
+    user = TelethonUser(FakeThumbClient(messages), me_id=1, tmp_dir=tmp_path)  # type: ignore[arg-type]
+
+    sample = await user.post_sample(-1001, [1, 2, 3, 4, 5, 6])
+
+    assert sample.text == "Смотри сюда и сюда"
+    assert sample.media == (
+        MediaSample("photo:10", b"1:m"),  # the 320 px rendition, not the full photo
+        MediaSample("document:20", b"2:m", 15),  # a video: its cover and length
+        MediaSample("document:30", b"3:full"),  # a small image file without a thumbnail
+        MediaSample("document:40", None),
+        MediaSample("other:-1001:5", None),
+    )

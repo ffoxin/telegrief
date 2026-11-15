@@ -52,8 +52,8 @@ def scored(
 
 
 async def test_migrate_is_idempotent(storage: Storage) -> None:
-    assert await storage.migrate() == 6
-    assert await storage.migrate() == 6
+    assert await storage.migrate() == 7
+    assert await storage.migrate() == 7
 
 
 async def test_migration_002_keeps_targets(tmp_path: Path) -> None:

@@ -42,6 +42,10 @@ FOLDER_COUNTERS: dict[str, tuple[str, list[dict[str, str]]]] = {
         "Posts sent to the digest channel, by how (failed: not delivered).",
         [{"delivery": d} for d in (*Delivery, "failed")],
     ),
+    "telegrief_duplicate_posts_total": (
+        "Queued posts dropped as duplicates of a delivered one, by what matched.",
+        [{"match": "media"}, {"match": "text"}],
+    ),
     "telegrief_read_posts_total": ("Delivered posts the owner's read marker has passed.", [{}]),
 }
 GLOBAL_COUNTERS: dict[str, tuple[str, list[dict[str, str]]]] = {
@@ -122,12 +126,13 @@ async def collect(storage: Storage, now: datetime) -> list[Family]:
         counter(name, text, label_sets)
 
     queue = await storage.queue_counts()
-    states = (ItemState.PENDING, "unread", ItemState.SENT, ItemState.FAILED)
+    states = (ItemState.PENDING, "unread", ItemState.SENT, ItemState.FAILED, ItemState.DUPLICATE)
     families.append(
         Family(
             "telegrief_queue_posts",
             "gauge",
-            "Queue rows: pending (waiting), unread (delivered, not read), sent (read), failed.",
+            "Queue rows: pending (waiting), unread (delivered, not read), sent (read), failed, "
+            "duplicate (dropped).",
             [
                 ({"folder": f.name, "state": str(s)}, float(queue.get((f.id, str(s)), 0)))
                 for f in folders
